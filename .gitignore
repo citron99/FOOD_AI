@@ -1,0 +1,23 @@
+# Секреты — только локально, никогда в репозитории
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Сгенерированные отчёты
+reports/
+
+# ОС и редакторы
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Локальные настройки агентов/IDE
+.claude/settings.local.json

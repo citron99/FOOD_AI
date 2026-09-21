@@ -1,0 +1,52 @@
+{
+  "products": [
+    {
+      "name": "Молоко 2.5%",
+      "quantity": 1,
+      "unit": "л",
+      "location": "холодильник",
+      "expires_at": "2026-08-17",
+      "status": "active"
+    },
+    {
+      "name": "Куриное филе",
+      "quantity": 0.8,
+      "unit": "кг",
+      "location": "холодильник",
+      "expires_at": "2026-08-20",
+      "status": "active"
+    },
+    {
+      "name": "Гречка",
+      "quantity": 1,
+      "unit": "упак.",
+      "location": "кладовая",
+      "expires_at": "2027-03-01",
+      "status": "active"
+    },
+    {
+      "name": "Замороженная брокколи",
+      "quantity": 0.5,
+      "unit": "кг",
+      "location": "морозильник",
+      "expires_at": "2026-08-19",
+      "status": "frozen"
+    },
+    {
+      "name": "Соль",
+      "quantity": 0.4,
+      "unit": "кг",
+      "location": "кладовая",
+      "expires_at": null,
+      "status": "active"
+    },
+    {
+      "name": "Списанный йогурт",
+      "quantity": 0,
+      "unit": "шт.",
+      "location": "холодильник",
+      "expires_at": "2026-08-18",
+      "status": "written_off"
+    }
+  ]
+}
