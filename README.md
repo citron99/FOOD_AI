@@ -1,5 +1,7 @@
 # AI_Food — SmartKitchen Family CLI Agent
 
+[![tests](https://github.com/citron99/FOOD_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/citron99/FOOD_AI/actions/workflows/tests.yml)
+
 Это переносимый прототип проектного агента для SmartKitchen Family. Первая реализованная мини-задача — детерминированная проверка сроков годности продуктов и генерация Markdown/JSON-отчёта.
 
 ## Запуск
