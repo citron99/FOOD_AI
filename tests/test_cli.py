@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from agent.cli import analyze, load_products
+from agent.cli import analyze, load_products, render_html
 
 
 class CliAgentTests(unittest.TestCase):
@@ -57,6 +57,21 @@ class CliAgentTests(unittest.TestCase):
             path.write_text(json.dumps({"products": [{"name": "Без остатка"}]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "quantity"):
                 load_products(path)
+
+    def test_render_html_produces_standalone_page(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text(json.dumps({"products": [
+                {"name": "Молоко <2.5%>", "quantity": 1, "unit": "л",
+                 "location": "холодильник", "expires_at": "2026-08-17"}
+            ]}), encoding="utf-8")
+            result = analyze(load_products(path), date(2026, 8, 18), 3)
+            html = render_html(result)
+            self.assertIn("<!DOCTYPE html>", html)
+            self.assertIn("Молоко &lt;2.5%&gt;", html)  # HTML-экранирование
+            self.assertIn("Сводка", html)
+            self.assertIn("</html>", html)
+            self.assertNotIn("<script", html)
 
 
 if __name__ == "__main__":

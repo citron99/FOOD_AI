@@ -152,6 +152,80 @@ def render_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_PAGE_CSS = """
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;
+margin:0 auto;padding:24px;color:#1a1a2e;background:#fafafa}
+h1{font-size:1.6rem} h2{margin-top:2rem;border-bottom:2px solid #e0e0e0;padding-bottom:4px}
+table{border-collapse:collapse;width:100%;margin:1rem 0;background:#fff}
+th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}
+th{background:#f0f4f8} tr:nth-child(even){background:#f9f9f9}
+blockquote{background:#fff8e6;border-left:4px solid #f0b400;margin:1rem 0;
+padding:10px 16px;border-radius:4px}
+footer{margin-top:3rem;font-size:.85rem;color:#888;border-top:1px solid #e0e0e0;padding-top:12px}
+"""
+
+
+def _esc(value: Any) -> str:
+    """Экранирование HTML-символов для безопасной вставки текста."""
+    return (str(value).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def render_html(result: dict[str, Any]) -> str:
+    """Автономная HTML-страница отчёта без внешних зависимостей.
+
+    Нужна для публикации отчёта на хостинге (например, по cron на Beget),
+    где нет библиотек конвертации Markdown.
+    """
+    s = result["summary"]
+    parts = [
+        "<!DOCTYPE html>", '<html lang="ru">', "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>SmartKitchen Family — отчёт о продуктах</title>",
+        f"<style>{_PAGE_CSS}</style>", "</head>", "<body>",
+        "<h1>SmartKitchen Family — отчёт о срочных продуктах</h1>",
+        "<blockquote>Дата расчёта: <b>", _esc(result["as_of"]), "</b>. Порог предупреждения: <b>",
+        _esc(result["warning_days"]), " дн.</b></blockquote>",
+        "<h2>Сводка</h2>", "<table><tr><th>Категория</th><th>Количество</th></tr>",
+        f"<tr><td>Просрочены</td><td>{s['expired']}</td></tr>",
+        f"<tr><td>Использовать в ближайшие дни</td><td>{s['urgent']}</td></tr>",
+        f"<tr><td>Без даты срока</td><td>{s['no_date']}</td></tr>",
+        f"<tr><td>Вне активного учёта</td><td>{s['ignored']}</td></tr>",
+        "</table>",
+    ]
+    for title, key, note in [
+        ("Просроченные продукты", "expired", "Не использовать без проверки безопасности и решения пользователя."),
+        ("Продукты с приближающимся сроком", "urgent", "Рекомендуется включить в ближайшее меню."),
+        ("Активные продукты без даты срока", "no_date", "Нужно уточнить срок вручную, если он критичен для безопасности."),
+    ]:
+        parts += [f"<h2>{_esc(title)}</h2>", f"<blockquote>{_esc(note)}</blockquote>"]
+        items = result["groups"][key]
+        if not items:
+            parts.append("<p>Нет позиций.</p>")
+            continue
+        parts.append("<table><tr><th>Продукт</th><th>Остаток</th><th>Место</th>"
+                     "<th>Срок</th><th>Осталось дней</th></tr>")
+        for item in items:
+            days = "—" if item["days_left"] is None else item["days_left"]
+            expiry = item["expires_at"] or "—"
+            parts.append(
+                "<tr>"
+                f"<td>{_esc(item['name'])}</td>"
+                f"<td>{_esc(item['quantity'])} {_esc(item['unit'])}</td>"
+                f"<td>{_esc(item['location'])}</td>"
+                f"<td>{_esc(expiry)}</td>"
+                f"<td>{_esc(days)}</td>"
+                "</tr>"
+            )
+        parts.append("</table>")
+    parts += [
+        "<footer>Сгенерировано SmartKitchen Family CLI Agent</footer>",
+        "</body>", "</html>",
+    ]
+    return "\n".join(parts)
+
+
 def main() -> int:
     from agent.adapters.registry import available_sources, load_source
 
@@ -168,6 +242,8 @@ def main() -> int:
                         help="добавить в отчёт идеи блюд от DeepSeek (нужен DEEPSEEK_API_KEY)")
     parser.add_argument("--profile", type=Path, default=Path("data/family_profile.json"),
                         help="профиль семьи с аллергенами (hard-filter LLM-подсказок)")
+    parser.add_argument("--html-out", type=Path, default=None,
+                        help="дополнительно записать отчёт как автономную HTML-страницу")
     args = parser.parse_args()
     if args.warning_days < 0:
         parser.error("--warning-days должен быть неотрицательным")
@@ -219,6 +295,9 @@ def main() -> int:
         )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(markdown, encoding="utf-8")
+    if args.html_out:
+        args.html_out.parent.mkdir(parents=True, exist_ok=True)
+        args.html_out.write_text(render_html(result), encoding="utf-8")
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
