@@ -59,6 +59,12 @@ docker run --rm food_ai                          # отчёт по демо-ин
 docker run --rm -v "$PWD/reports:/app/reports" food_ai --html-out reports/expiry_report.html
 ```
 
+Готовый образ публикуется в GitHub Container Registry при каждом пуше в `main` (после успешных тестов) — можно запускать без локальной сборки:
+
+```bash
+docker run --rm ghcr.io/citron99/food_ai:latest
+```
+
 Полезные варианты:
 
 ```bash
