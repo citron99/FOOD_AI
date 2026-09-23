@@ -21,3 +21,8 @@ Thumbs.db
 
 # Локальные настройки агентов/IDE
 .claude/settings.local.json
+
+# Служебные файлы Kimi WebBridge (запросы/скриншоты автоматизации)
+.wb/
+webbridge-req-*.json
+Usersa0803DownloadsAI_FOOD.wbscreenshot_out.json
