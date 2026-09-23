@@ -1,0 +1,29 @@
+# Секреты — никогда в образ
+.env
+.env.*
+!.env.example
+
+# Git и CI
+.git
+.github
+.gitignore
+
+# Локальный мусор автоматизации и IDE
+.wb/
+webbridge-req-*.json
+Usersa0803DownloadsAI_FOOD.wbscreenshot_out.json
+.claude/
+.idea/
+.vscode/
+
+# Python-кэш
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Сгенерированные отчёты не нужны в образе
+reports/
+
+# Исходники ТЗ не относятся к рантайму
+T3_*.docx
+_tz_extracted.txt
