@@ -1,0 +1,17 @@
+# FOOD_AI / SmartKitchen Family — локальный запуск через Docker Compose.
+# Сборка идёт из локального Dockerfile; для готового образа из ghcr.io
+# замените build/image на: image: ghcr.io/citron99/food_ai:latest
+
+services:
+  food_ai:
+    build: .
+    image: food_ai:latest
+    # Отчёты попадают в ./reports на хосте; демо-инвентарь монтируется read-only.
+    volumes:
+      - ./reports:/app/reports
+      - ./data:/app/data:ro
+    # Переменные POS-источников и DeepSeek подхватываются из .env, если файл есть.
+    env_file:
+      - path: .env
+        required: false
+    command: ["--inventory", "data/inventory.json", "--warning-days", "3", "--out", "reports/expiry_report.md"]

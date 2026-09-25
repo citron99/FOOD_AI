@@ -65,6 +65,15 @@ docker run --rm -v "$PWD/reports:/app/reports" food_ai --html-out reports/expiry
 docker run --rm ghcr.io/citron99/food_ai:latest
 ```
 
+### Docker Compose
+
+Для регулярной локальной работы есть `docker-compose.yml` — сборка из исходников, папка `./reports` примонтирована к `/app/reports`, переменные источников подхватываются из `.env` (если файл есть):
+
+```bash
+docker-compose run --rm food_ai                       # отчёт на текущую дату
+docker-compose run --rm food_ai --as-of 2026-08-18 --html-out reports/expiry_report.html
+```
+
 Полезные варианты:
 
 ```bash
