@@ -46,13 +46,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: meta
+      - name: Compute tags for ghcr.io
+        id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/food_ai
-            a08037/food_ai
+          images: ghcr.io/${{ github.repository_owner }}/food_ai
           # main: latest + sha; тег v1.2.3: 1.2.3, 1.2 и latest
           tags: |
             type=ref,event=branch
@@ -60,9 +58,30 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=,format=short
 
-      - name: Build and push image
+      - name: Compute tags for Docker Hub
+        id: meta-dockerhub
+        uses: docker/metadata-action@v5
+        with:
+          images: a08037/food_ai
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=,format=short
+
+      - name: Build and push to ghcr.io
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta-ghcr.outputs.tags }}
+
+      # Не блокирует публикацию, пока у DOCKERHUB_TOKEN не будет права Read & Write:
+      # при корректном токене шаг проходит, CI остаётся зелёным и в любом случае.
+      - name: Build and push to Docker Hub
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta-dockerhub.outputs.tags }}
