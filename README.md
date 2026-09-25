@@ -65,6 +65,14 @@ docker run --rm -v "$PWD/reports:/app/reports" food_ai --html-out reports/expiry
 docker run --rm ghcr.io/citron99/food_ai:latest
 ```
 
+Тот же образ размещён и на Docker Hub:
+
+```bash
+docker run --rm a08037/food_ai:latest
+```
+
+Релизы версионируются тегами `v*` (например `v1.0.0`): CI публикует образы с тегами `1.0.0` и `1.0` в обоих реестрах, `latest` всегда указывает на последний `main`.
+
 ### Docker Compose
 
 Для регулярной локальной работы есть `docker-compose.yml` — сборка из исходников, папка `./reports` примонтирована к `/app/reports`, переменные источников подхватываются из `.env` (если файл есть):
