@@ -3,6 +3,7 @@ name: tests
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -24,7 +25,7 @@ jobs:
 
   docker:
     needs: unittest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,11 +40,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/food_ai
+          # main: latest + sha; тег v1.2.3: 1.2.3, 1.2 и latest
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=,format=short
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/food_ai:latest
-            ghcr.io/${{ github.repository_owner }}/food_ai:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
