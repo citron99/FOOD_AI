@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -226,6 +227,58 @@ def render_html(result: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def load_family_allergens(profile: Path, *, allow_no_profile: bool = False) -> tuple[set[str], list[str]]:
+    """Загружает аллергены профиля семьи для hard-filter LLM-подсказок.
+
+    Возвращает ``(аллергены, предупреждения)``.
+
+    Профиль — часть защитного слоя (cli_agent_design.md: «если API ошибся, CLI
+    не пропустит опасный рецепт»), поэтому его отсутствие больше не отключает
+    фильтр молча:
+
+    * файла нет и ``allow_no_profile`` не задан → ``ValueError`` (запуск
+      завершается с кодом 2 и понятной инструкцией);
+    * файла нет и задан ``--allow-no-profile`` → пустой набор плюс громкое
+      предупреждение в отчёт и в stderr;
+    * файл есть, но аллергенов в нём нет → тот же громкий предупреждающий
+      путь: фильтр формально загружен, но ничего не скрывает.
+
+    Асимметрия намеренная: пустой список ``allergens`` в существующем файле —
+    это осознанное заявление «в семье нет аллергий», а вот отсутствующий файл
+    чаще всего означает неверный путь или потерянный том в контейнере, поэтому
+    без явного флага запуск прерывается.
+
+    Ошибки формата профиля поднимает ``agent.allergens.load_allergens``.
+    """
+    # Импорт внутри функции: agent.allergens → agent.adapters.base → agent.cli,
+    # на уровне модуля получилась бы циклическая зависимость.
+    from agent.allergens import load_allergens
+
+    if not profile.exists():
+        if not allow_no_profile:
+            raise ValueError(
+                f"Профиль семьи с аллергенами не найден: {profile}. "
+                "Без него hard-filter аллергенов отключается, а публиковать "
+                "LLM-подсказки о еде без фильтра небезопасно. Создайте файл "
+                'вида {"family_id": "demo", "allergens": ["орехи", "мёд"]} '
+                "или добавьте --allow-no-profile, чтобы осознанно принять риск "
+                "(в отчёте появится явное предупреждение)."
+            )
+        return set(), [
+            "⚠️ Hard-filter аллергенов ОТКЛЮЧЁН: профиль семьи не найден "
+            f"({profile}). Подсказки ниже НЕ проверены на аллергены "
+            "(подтверждено флагом --allow-no-profile)."
+        ]
+    allergens = load_allergens(profile)
+    if not allergens:
+        return set(), [
+            f"⚠️ Hard-filter аллергенов фактически не работает: профиль {profile} "
+            "не содержит ни одного аллергена (поле «allergens» пустое). "
+            "Подсказки ниже НЕ проверены на аллергены."
+        ]
+    return allergens, []
+
+
 def main() -> int:
     from agent.adapters.registry import available_sources, load_source
 
@@ -242,11 +295,28 @@ def main() -> int:
                         help="добавить в отчёт идеи блюд от DeepSeek (нужен DEEPSEEK_API_KEY)")
     parser.add_argument("--profile", type=Path, default=Path("data/family_profile.json"),
                         help="профиль семьи с аллергенами (hard-filter LLM-подсказок)")
+    parser.add_argument("--allow-no-profile", action="store_true",
+                        help="разрешить --suggest-menu без профиля аллергенов: фильтр будет "
+                             "отключён, а в отчёте появится явное предупреждение")
     parser.add_argument("--html-out", type=Path, default=None,
                         help="дополнительно записать отчёт как автономную HTML-страницу")
     args = parser.parse_args()
     if args.warning_days < 0:
         parser.error("--warning-days должен быть неотрицательным")
+    # Проверяем профиль ДО чтения инвентаря и тем более до запроса к LLM:
+    # ошибка конфигурации безопасности не должна обнаруживаться после сети.
+    allergens: set[str] = set()
+    allergen_warnings: list[str] = []
+    if args.suggest_menu:
+        from agent.adapters.base import AdapterError
+        try:
+            allergens, allergen_warnings = load_family_allergens(
+                args.profile, allow_no_profile=args.allow_no_profile
+            )
+        except (ValueError, AdapterError) as exc:
+            parser.error(str(exc))
+        for warning in allergen_warnings:
+            print(warning, file=sys.stderr)
     if args.source == "json":
         try:
             products = load_products(args.inventory)
@@ -260,37 +330,35 @@ def main() -> int:
     result = analyze(products, args.as_of, args.warning_days)
     markdown = render_markdown(result)
     if args.suggest_menu:
-        from agent.adapters.base import AdapterError
         from agent.adapters.deepseek import suggest_menu_ideas
-        from agent.allergens import filter_suggestions, load_allergens
+        from agent.allergens import expand_allergens, filter_suggestions, matched_profile_allergens
         urgent = result["groups"]["urgent"]
         candidates = [p for p in products
                       if p.name in {item["name"] for item in urgent}]
         try:
-            ideas = suggest_menu_ideas(candidates)
+            ideas = suggest_menu_ideas(candidates, allergens=sorted(allergens))
         except Exception as exc:
             parser.error(f"DeepSeek недоступен: {exc}")
         # Hard-filter аллергенов: блюда с аллергенами из профиля семьи
         # не показываются вовне (cli_agent_design.md, раздел про аллергены).
-        if args.profile.exists():
-            try:
-                allergens = load_allergens(args.profile)
-            except AdapterError as exc:
-                parser.error(str(exc))
-            ideas, dropped = filter_suggestions(ideas, allergens)
-        else:
-            allergens, dropped = set(), 0
-        notice = (
+        # Фильтр работает по расширенному набору (профиль + синонимы из
+        # data/allergen_synonyms.json), а в отчёте называются слова профиля.
+        raw_ideas = ideas
+        ideas, dropped = filter_suggestions(ideas, expand_allergens(allergens))
+        notice = [
             "> ⚠️ Неподтверждённая LLM-подсказка: проверьте состав и аллергены "
             "вручную перед приготовлением."
-        )
+        ]
+        notice += [">\n> " + warning for warning in allergen_warnings]
         if dropped:
-            notice += f"\n>\n> Скрыто блюд с аллергенами профиля: **{dropped}**."
+            reasons = matched_profile_allergens(raw_ideas, allergens)
+            suffix = f" ({', '.join(reasons)})" if reasons else ""
+            notice.append(f">\n> Скрыто блюд с аллергенами профиля: **{dropped}**{suffix}.")
         if not ideas.strip():
             ideas = "Нет блюд без аллергенов профиля семьи."
         markdown += (
             "\n## Идеи блюд (DeepSeek)\n\n"
-            + notice + "\n\n"
+            + "\n".join(notice) + "\n\n"
             + ideas.strip() + "\n"
         )
     args.out.parent.mkdir(parents=True, exist_ok=True)

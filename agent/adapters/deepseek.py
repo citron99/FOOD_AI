@@ -5,6 +5,10 @@ DeepSeek — внешний LLM-провайдер. Согласно ТЗ, LLM-�
 истекающим сроком), которые пользователь подтверждает вручную. Детерминированная
 логика отчёта (сроки годности, группы) от LLM не зависит.
 
+Аллергены профиля семьи уходят прямо в промпт, но это лишь первое сито: ответ
+всё равно проходит через детерминированный hard-filter ``agent.allergens``,
+поэтому непослушная модель не приведёт к публикации опасного блюда.
+
 Подключение (секреты — только из окружения):
 - DEEPSEEK_API_KEY — ключ из кабинета DeepSeek (platform.deepseek.com)
 - DEEPSEEK_BASE_URL — по умолчанию https://api.deepseek.com
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Iterable
 
 from agent.adapters.base import (
     AdapterAuthError,
@@ -25,6 +30,7 @@ from agent.adapters.base import (
     fetch_json,
     http_transport,
 )
+from agent.allergens import normalize
 from agent.cli import Product
 
 SYSTEM = "deepseek"
@@ -64,11 +70,18 @@ def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
 
 def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
                        base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL,
+                       allergens: Iterable[str] | None = None,
                        transport: Transport = http_transport) -> str:
     """Просит DeepSeek предложить блюда из списка продуктов.
 
+    ``allergens`` — аллергены из профиля семьи. Они попадают прямо в промпт,
+    чтобы модель не предлагала опасные блюда вовсе: детерминированный
+    hard-filter (``agent.allergens``) режет выдачу постфактум, и без подсказки
+    в промпте это кончается пустым списком вместо полезных идей.
+
     Результат — необрабатываемая напрямую подсказка: по ТЗ её должен
-    подтвердить пользователь перед использованием.
+    подтвердить пользователь перед использованием, а hard-filter всё равно
+    применяется к ответу независимо от того, послушалась модель или нет.
     """
     if not products:
         return "Нет продуктов для подсказок."
@@ -79,6 +92,17 @@ def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
         "быстрее. Ответь кратким списком на русском: название блюда — 1 строка "
         "состава. Без вступлений."
     )
+    forbidden = sorted({normalize(item).strip() for item in (allergens or [])
+                        if str(item).strip()})
+    if forbidden:
+        prompt += (
+            " СТРОГОЕ ОГРАНИЧЕНИЕ ПО ЗДОРОВЬЮ: в семье аллергия на "
+            + ", ".join(forbidden)
+            + ". Не предлагай блюда, содержащие эти продукты, их производные "
+            "и следы (включая соусы, панировку и специи). В составе каждого "
+            "блюда перечисли все ингредиенты, чтобы ограничение можно было "
+            "проверить."
+        )
     return chat(
         [{"role": "user", "content": prompt}],
         api_key=api_key, base_url=base_url, model=model,

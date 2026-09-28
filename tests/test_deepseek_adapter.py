@@ -15,6 +15,24 @@ def fake_response(payload):
     return lambda url, body, headers, timeout: raw
 
 
+class RecordingTransport:
+    """Транспорт, запоминающий запрос: нужен для проверки содержимого промпта."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.url = None
+        self.request = None
+
+    def __call__(self, url, body, headers, timeout):
+        self.url = url
+        self.request = json.loads(body.decode("utf-8"))
+        return json.dumps(self.payload).encode("utf-8")
+
+    @property
+    def prompt(self) -> str:
+        return self.request["messages"][0]["content"]
+
+
 CHAT_OK = {
     "choices": [{"message": {"role": "assistant", "content": "1. Омлет с молоком"}}],
     "usage": {"total_tokens": 10},
@@ -60,6 +78,31 @@ class DeepSeekAdapterTests(unittest.TestCase):
 
     def test_suggest_menu_ideas_without_products(self):
         self.assertIn("Нет продуктов", deepseek.suggest_menu_ideas([]))
+
+    def test_suggest_menu_ideas_puts_allergens_into_prompt(self):
+        """Регрессия: LLM не знала об ограничениях семьи, фильтр резал выдачу постфактум."""
+        transport = RecordingTransport(CHAT_OK)
+        products = [Product(name="Куриное филе", quantity=1, unit="кг",
+                            location="холодильник", expires_at=None)]
+        deepseek.suggest_menu_ideas(
+            products, api_key="k", allergens=["арахис", " Глютен ", ""],
+            transport=transport,
+        )
+        prompt = transport.prompt
+        self.assertIn("СТРОГОЕ ОГРАНИЧЕНИЕ ПО ЗДОРОВЬЮ", prompt)
+        self.assertIn("арахис, глютен", prompt)  # нормализовано и отсортировано
+        self.assertIn("Куриное филе", prompt)
+        self.assertNotIn("Глютен", prompt)
+
+    def test_suggest_menu_ideas_without_allergens_has_no_restriction(self):
+        transport = RecordingTransport(CHAT_OK)
+        products = [Product(name="Рис", quantity=1, unit="кг",
+                            location="шкаф", expires_at=None)]
+        deepseek.suggest_menu_ideas(products, api_key="k", transport=transport)
+        self.assertNotIn("ОГРАНИЧЕНИЕ", transport.prompt)
+
+        deepseek.suggest_menu_ideas(products, api_key="k", allergens=[], transport=transport)
+        self.assertNotIn("ОГРАНИЧЕНИЕ", transport.prompt)
 
 
 if __name__ == "__main__":
