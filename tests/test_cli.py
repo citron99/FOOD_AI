@@ -10,7 +10,16 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from agent.cli import analyze, load_family_allergens, load_products, main, render_html
+from agent.adapters.base import AdapterError
+from agent.cli import (
+    Product,
+    analyze,
+    load_family_allergens,
+    load_products,
+    main,
+    render_html,
+    render_markdown,
+)
 
 
 class CliAgentTests(unittest.TestCase):
@@ -77,6 +86,160 @@ class CliAgentTests(unittest.TestCase):
             self.assertNotIn("<script", html)
 
 
+class InputValidationTests(unittest.TestCase):
+    """Волна 3 (ревью, «валидация входных данных»).
+
+    Плохие типы полей давали сырые TypeError из strptime, ``name: null``
+    превращался в продукт «None», а опечатка/null в статусе молча уводили
+    позицию в ignored — просрочка исчезала из отчёта без единого слова.
+    """
+
+    def _inventory(self, directory: str, items: list) -> Path:
+        path = Path(directory) / "inventory.json"
+        path.write_text(json.dumps({"products": items}), encoding="utf-8")
+        return path
+
+    def test_numeric_expires_at_is_value_error_with_product_name(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Йогурт", "quantity": 1, "expires_at": 20260820}
+            ])
+            with self.assertRaisesRegex(ValueError, "Неверный формат даты.*Йогурт"):
+                load_products(path)
+
+    def test_list_expires_at_is_value_error_with_product_name(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Йогурт", "quantity": 1, "expires_at": ["2026"]}
+            ])
+            with self.assertRaisesRegex(ValueError, "Неверный формат даты.*Йогурт"):
+                load_products(path)
+
+    def test_null_name_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": None, "quantity": 1, "expires_at": "2026-08-20"}
+            ])
+            with self.assertRaisesRegex(ValueError, "обязательное поле «name»"):
+                load_products(path)
+
+    def test_unknown_status_warns_and_stays_ignored(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Кефир", "quantity": 1, "expires_at": "2026-08-17",
+                 "status": "actve"}
+            ])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                products = load_products(path)
+            # Предупреждение — в stderr, позиция остаётся исключённой из учёта.
+            self.assertIn("actve", err.getvalue())
+            self.assertIn("Кефир", err.getvalue())
+            result = analyze(products, date(2026, 8, 18), 3)
+            self.assertEqual(result["summary"]["ignored"], 1)
+
+    def test_null_status_warns(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Кефир", "quantity": 1, "expires_at": "2026-08-17",
+                 "status": None}
+            ])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                load_products(path)
+            self.assertIn("'null'", err.getvalue())
+
+    def test_missing_and_known_status_do_not_warn(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "A", "quantity": 1, "expires_at": "2026-08-17"},
+                {"name": "B", "quantity": 1, "expires_at": "2026-08-17",
+                 "status": "frozen"},
+                # written_off — осознанное списание из демо-инвентаря:
+                # без предупреждения, но и без активного учёта.
+                {"name": "Списанный", "quantity": 0, "status": "written_off"},
+            ])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                products = load_products(path)
+            self.assertEqual(err.getvalue(), "")
+            result = analyze(products, date(2026, 8, 18), 3)
+            self.assertEqual(result["summary"]["ignored"], 1)
+
+    def test_render_markdown_escapes_pipe_in_cell_values(self):
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Молоко | 2.5%", "quantity": 1, "unit": "л",
+                 "location": "холод", "expires_at": "2026-08-20"}
+            ])
+            result = analyze(load_products(path), date(2026, 8, 18), 3)
+            row = next(line for line in render_markdown(result).splitlines()
+                       if "Молоко" in line)
+            self.assertIn(r"Молоко \| 2.5%", row)
+            # 5 колонок = 6 неэкранированных разделителей; до фикса было 7.
+            unescaped = sum(1 for i, ch in enumerate(row)
+                            if ch == "|" and (i == 0 or row[i - 1] != "\\"))
+            self.assertEqual(unescaped, 6)
+
+
+class ManualAccountingSectionTests(unittest.TestCase):
+    """Волна 4 (ревью, п.10): отчёт из POS-источника не должен быть пустым
+    без объяснений — ignored-позиции (quantity=0) перечисляются в секции
+    «Требуется ручной учёт» с пояснением, что делать пользователю."""
+
+    def _pos_result(self):
+        # Как из POS-адаптеров: справочник без остатков и сроков.
+        products = [
+            Product(name="Куриное филе", quantity=0, unit="кг",
+                    location="склад", expires_at=None),
+            Product(name="Говядина", quantity=0, unit="кг",
+                    location="склад", expires_at=None),
+            Product(name="Списанный", quantity=0, unit="л",
+                    location="холодильник", expires_at=None,
+                    status="written_off"),
+        ]
+        return analyze(products, date(2026, 8, 18), 3)
+
+    def test_markdown_lists_ignored_products_with_note(self):
+        markdown = render_markdown(self._pos_result())
+        self.assertIn("## Требуется ручной учёт", markdown)
+        self.assertIn("Куриное филе", markdown)
+        self.assertIn("Говядина", markdown)
+        self.assertIn("Подтвердите остаток и срок вручную", markdown)
+        # Детерминированный порядок — по имени.
+        self.assertLess(markdown.index("Говядина"), markdown.index("Куриное филе"))
+
+    def test_html_lists_ignored_products_with_note(self):
+        html = render_html(self._pos_result())
+        self.assertIn("<h2>Требуется ручной учёт</h2>", html)
+        self.assertIn("Куриное филе", html)
+        self.assertIn("Подтвердите остаток и срок вручную", html)
+
+    def test_section_absent_when_nothing_ignored(self):
+        result = analyze(
+            [Product(name="A", quantity=1, unit="шт.", location="склад",
+                     expires_at=None)],
+            date(2026, 8, 18), 3,
+        )
+        self.assertNotIn("Требуется ручной учёт", render_markdown(result))
+        self.assertNotIn("Требуется ручной учёт", render_html(result))
+
+    def test_ignored_names_are_escaped(self):
+        result = analyze(
+            [Product(name="Сливки <2.5%> | акция", quantity=0, unit="л",
+                     location="холод", expires_at=None)],
+            date(2026, 8, 18), 3,
+        )
+        markdown = render_markdown(result)
+        html = render_html(result)
+        self.assertIn(r"Сливки <2.5%> \| акция", markdown)
+        row = next(line for line in markdown.splitlines() if "Сливки" in line)
+        unescaped = sum(1 for i, ch in enumerate(row)
+                        if ch == "|" and (i == 0 or row[i - 1] != "\\"))
+        self.assertEqual(unescaped, 5)  # 4 колонки = 5 разделителей
+        self.assertIn("Сливки &lt;2.5%&gt; | акция", html)
+
+
 class AllergenProfileTests(unittest.TestCase):
     """Профиль семьи — часть защитного слоя, его отсутствие не должно быть тихим."""
 
@@ -120,13 +283,14 @@ class SuggestMenuReportTests(unittest.TestCase):
         "3. Паста из пшеницы с мукой — тесто, сыр"
     )
 
-    def run_cli(self, directory: str, profile_payload, extra_args=()):
+    def run_cli(self, directory: str, profile_payload, extra_args=(), html=False):
         inventory = Path(directory) / "inventory.json"
         inventory.write_text(json.dumps({"products": [
             {"name": "Куриное филе", "quantity": 1, "unit": "кг",
              "location": "холодильник", "expires_at": "2026-09-29"},
-        ]}), encoding="utf-8")
+        ]}, ensure_ascii=False), encoding="utf-8")
         out = Path(directory) / "report.md"
+        html_path = Path(directory) / "report.html"
         if profile_payload is not None:
             profile = Path(directory) / "profile.json"
             profile.write_text(json.dumps(profile_payload, ensure_ascii=False), encoding="utf-8")
@@ -137,6 +301,8 @@ class SuggestMenuReportTests(unittest.TestCase):
             "--as-of", "2026-09-28", "--suggest-menu", "--profile", str(profile),
             *extra_args,
         ]
+        if html:
+            argv += ["--html-out", str(html_path)]
         calls = {}
 
         def fake_suggest(products, **kwargs):
@@ -149,11 +315,11 @@ class SuggestMenuReportTests(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
                     code = main()
-        return code, out, calls, stderr.getvalue()
+        return code, out, calls, stderr.getvalue(), html_path
 
     def test_allergen_dishes_are_hidden_and_audited(self):
         with TemporaryDirectory() as directory:
-            code, out, calls, _ = self.run_cli(
+            code, out, calls, _, _ = self.run_cli(
                 directory, {"family_id": "demo", "allergens": ["арахис", "глютен"]})
             report = out.read_text(encoding="utf-8")
             self.assertEqual(code, 0)
@@ -172,7 +338,7 @@ class SuggestMenuReportTests(unittest.TestCase):
 
     def test_allow_no_profile_publishes_with_warning(self):
         with TemporaryDirectory() as directory:
-            code, out, calls, stderr = self.run_cli(
+            code, out, calls, stderr, _ = self.run_cli(
                 directory, None, extra_args=["--allow-no-profile"])
             report = out.read_text(encoding="utf-8")
             self.assertEqual(code, 0)
@@ -183,7 +349,7 @@ class SuggestMenuReportTests(unittest.TestCase):
 
     def test_empty_profile_publishes_with_warning(self):
         with TemporaryDirectory() as directory:
-            code, out, _, stderr = self.run_cli(directory, {"family_id": "demo", "allergens": []})
+            code, out, _, stderr, _ = self.run_cli(directory, {"family_id": "demo", "allergens": []})
             report = out.read_text(encoding="utf-8")
             self.assertEqual(code, 0)
             self.assertIn("не содержит ни одного аллергена", report)
@@ -204,6 +370,131 @@ class SuggestMenuReportTests(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(), 0)
             self.assertNotIn("Идеи блюд", out.read_text(encoding="utf-8"))
+
+
+class LLMDegradationTests(unittest.TestCase):
+    """П.6 ревью: сбой DeepSeek не должен ронять детерминированный отчёт.
+
+    По умолчанию отчёт о сроках публикуется, а сбой фиксируется в секции
+    идей и в stderr; флаг --strict-llm возвращает старое поведение
+    «упасть с кодом 2 без записи отчёта».
+    """
+
+    def run_cli(self, directory: str, *, failure: Exception | None = None,
+                extra_args=(), html=False):
+        inventory = Path(directory) / "inventory.json"
+        inventory.write_text(json.dumps({"products": [
+            {"name": "Куриное филе", "quantity": 1, "unit": "кг",
+             "location": "холодильник", "expires_at": "2026-09-29"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        profile = Path(directory) / "profile.json"
+        profile.write_text(json.dumps({"family_id": "demo", "allergens": []}),
+                           encoding="utf-8")
+        out = Path(directory) / "report.md"
+        html_path = Path(directory) / "report.html"
+        argv = [
+            "cli", "--inventory", str(inventory), "--out", str(out),
+            "--as-of", "2026-09-28", "--suggest-menu", "--profile", str(profile),
+            *extra_args,
+        ]
+        if html:
+            argv += ["--html-out", str(html_path)]
+
+        def fake_suggest(products, **kwargs):
+            if failure is not None:
+                raise failure
+            return "1. Куриный суп\n2. Омлет из яиц"
+
+        stderr = io.StringIO()
+        with mock.patch("agent.adapters.deepseek.suggest_menu_ideas",
+                        side_effect=fake_suggest):
+            with mock.patch.object(sys, "argv", argv):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                    code = main()
+        return code, out, html_path, stderr.getvalue()
+
+    def test_llm_failure_still_publishes_report(self):
+        with TemporaryDirectory() as directory:
+            code, out, _, stderr = self.run_cli(
+                directory, failure=AdapterError("таймаут запроса"))
+            report = out.read_text(encoding="utf-8")
+            self.assertEqual(code, 0)
+            self.assertIn("DeepSeek недоступен", report)
+            self.assertIn("DeepSeek недоступен", stderr)
+            self.assertIn("Идеи блюд не получены", report)
+            # Детерминированная часть отчёта на месте.
+            self.assertIn("Куриное филе", report)
+            self.assertNotIn("Куриный суп", report)
+
+    def test_strict_llm_fails_without_report(self):
+        with TemporaryDirectory() as directory:
+            with self.assertRaises(SystemExit) as caught:
+                self.run_cli(directory, failure=AdapterError("таймаут запроса"),
+                             extra_args=["--strict-llm"])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertFalse((Path(directory) / "report.md").exists())
+
+
+class MenuIdeasHtmlTests(unittest.TestCase):
+    """П.9 ревью: секция «Идеи блюд» должна попадать и в HTML-отчёт,
+    который публикуется на хостинг по cron, а не только в Markdown."""
+
+    def run_cli(self, directory: str, *, failure: Exception | None = None):
+        inventory = Path(directory) / "inventory.json"
+        inventory.write_text(json.dumps({"products": [
+            {"name": "Куриное филе", "quantity": 1, "unit": "кг",
+             "location": "холодильник", "expires_at": "2026-09-29"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        profile = Path(directory) / "profile.json"
+        profile.write_text(json.dumps({"family_id": "demo", "allergens": []}),
+                           encoding="utf-8")
+        out = Path(directory) / "report.md"
+        html_path = Path(directory) / "report.html"
+        argv = ["cli", "--inventory", str(inventory), "--out", str(out),
+                "--as-of", "2026-09-28", "--suggest-menu", "--profile", str(profile),
+                "--html-out", str(html_path)]
+
+        def fake_suggest(products, **kwargs):
+            if failure is not None:
+                raise failure
+            return "1. Куриный суп\n2. Омлет из яиц"
+
+        stderr = io.StringIO()
+        with mock.patch("agent.adapters.deepseek.suggest_menu_ideas",
+                        side_effect=fake_suggest):
+            with mock.patch.object(sys, "argv", argv):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                    code = main()
+        return code, out, html_path
+
+    def test_html_contains_menu_ideas(self):
+        with TemporaryDirectory() as directory:
+            code, out, html_path = self.run_cli(directory)
+            html = html_path.read_text(encoding="utf-8")
+            self.assertEqual(code, 0)
+            self.assertIn("Идеи блюд (DeepSeek)", html)
+            self.assertIn("Неподтверждённая LLM-подсказка", html)
+            # Пронумерованные строки идей — нумерованным списком.
+            self.assertIn("<ol>", html)
+            self.assertIn("<li>Куриный суп</li>", html)
+            # Секция есть и в Markdown тоже.
+            self.assertIn("Идеи блюд (DeepSeek)", out.read_text(encoding="utf-8"))
+
+    def test_html_escapes_dish_names(self):
+        with TemporaryDirectory() as directory:
+            _, _, html_path = self.run_cli(directory)
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("<li>Омлет из яиц</li>", html)
+
+    def test_html_marks_llm_failure(self):
+        with TemporaryDirectory() as directory:
+            code, _, html_path = self.run_cli(
+                directory, failure=AdapterError("таймаут запроса"))
+            html = html_path.read_text(encoding="utf-8")
+            self.assertEqual(code, 0)
+            self.assertIn("Идеи блюд (DeepSeek)", html)
+            self.assertIn("DeepSeek недоступен", html)
+            self.assertIn("Куриное филе", html)  # детерминированная часть на месте
 
 
 if __name__ == "__main__":

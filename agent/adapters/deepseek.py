@@ -13,8 +13,12 @@ DeepSeek — внешний LLM-провайдер. Согласно ТЗ, LLM-�
 - DEEPSEEK_API_KEY — ключ из кабинета DeepSeek (platform.deepseek.com)
 - DEEPSEEK_BASE_URL — по умолчанию https://api.deepseek.com
 - DEEPSEEK_MODEL — по умолчанию deepseek-chat
+- DEEPSEEK_TIMEOUT — таймаут запроса в секундах, по умолчанию 30.0
+  (10 секунд дефолта RestConfig для chat-completion с max_tokens=800 мало)
 
-Транспорт внедряется (dependency injection) — тесты работают без сети и без ключа.
+Приоритет настроек: явный аргумент функции > переменная окружения > значение
+по умолчанию. Транспорт внедряется (dependency injection) — тесты работают
+без сети и без ключа.
 """
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from agent.adapters.base import (
     AdapterAuthError,
     AdapterError,
     AdapterResponseError,
+    RestConfig,
     Transport,
     fetch_json,
     http_transport,
@@ -36,11 +41,29 @@ from agent.cli import Product
 SYSTEM = "deepseek"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_TIMEOUT = 30.0
+
+
+def _resolve_timeout() -> float:
+    """Таймаут из DEEPSEEK_TIMEOUT; молча игнорировать опечатку нельзя."""
+    raw = os.environ.get("DEEPSEEK_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        raise AdapterError(
+            f"DEEPSEEK_TIMEOUT должно быть числом секунд, получено: {raw!r}"
+        ) from None
+    if value <= 0:
+        raise AdapterError("DEEPSEEK_TIMEOUT должно быть положительным числом секунд")
+    return value
 
 
 def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
-         base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL,
+         base_url: str | None = None, model: str | None = None,
          max_tokens: int = 800, temperature: float = 0.3,
+         timeout: float | None = None,
          transport: Transport = http_transport) -> str:
     """Отправляет диалог в /chat/completions и возвращает текст ответа."""
     key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
@@ -49,8 +72,13 @@ def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
             "Не задана переменная окружения DEEPSEEK_API_KEY "
             "(ключ из кабинета DeepSeek, platform.deepseek.com)."
         )
-    from agent.adapters.base import RestConfig
-    cfg = RestConfig(base_url=base_url, endpoint="/chat/completions", token=key)
+    # П.8 ревью: BASE_URL/MODEL задокументированы в .env.example, но не читались.
+    base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL") or DEFAULT_BASE_URL
+    model = model or os.environ.get("DEEPSEEK_MODEL") or DEFAULT_MODEL
+    if timeout is None:
+        timeout = _resolve_timeout()
+    cfg = RestConfig(base_url=base_url, endpoint="/chat/completions", token=key,
+                     timeout=timeout)
     body = json.dumps({
         "model": model,
         "messages": messages,
@@ -69,8 +97,9 @@ def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
 
 
 def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
-                       base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL,
+                       base_url: str | None = None, model: str | None = None,
                        allergens: Iterable[str] | None = None,
+                       timeout: float | None = None,
                        transport: Transport = http_transport) -> str:
     """Просит DeepSeek предложить блюда из списка продуктов.
 
@@ -106,5 +135,6 @@ def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
     return chat(
         [{"role": "user", "content": prompt}],
         api_key=api_key, base_url=base_url, model=model,
+        timeout=timeout,
         transport=transport,
     )
