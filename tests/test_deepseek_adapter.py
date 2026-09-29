@@ -1,14 +1,10 @@
 import json
 import os
-import sys
 import unittest
-from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-
-from agent.adapters.base import AdapterError, AdapterResponseError
 from agent.adapters import deepseek
+from agent.adapters.base import AdapterError, AdapterResponseError
 from agent.cli import Product
 
 

@@ -2,8 +2,14 @@
 
 Дизайн-заготовка (stub): реализованы конфигурация подключения, HTTP-транспорт
 к XML-интерфейсу R:keeper, безопасный маппинг справочника товаров на
-``agent.cli.Product`` и обработка ошибок. Транспорт внедряется (dependency
+``agent.models.Product`` и обработка ошибок. Транспорт внедряется (dependency
 injection), поэтому адаптер тестируется без сети и без ключа R:keeper.
+
+Волна 5 (ревью, п.12): раньше модуль держал параллельную иерархию — свои
+исключения, свой ``ImportResult``, свой транспорт. Теперь ошибки наследуются
+от общих ``AdapterError``/``AdapterAuthError``/``AdapterResponseError``
+(имена ``RkeeperError`` и т.п. сохранены для совместимости), результат импорта
+— общий ``ImportOutcome``, транспорт и заголовок Basic — из ``base.py``.
 
 Важные ограничения (зафиксированы намеренно):
 - Справочник товаров R:keeper не содержит сроков годности и домашних остатков.
@@ -15,20 +21,30 @@ injection), поэтому адаптер тестируется без сети
   и записи без подтверждения).
 - Параметры запроса (имя справочника, имена атрибутов) вынесены в конфигурацию:
   они зависят от версии R:keeper и настройки конкретного объекта.
+- Защита XML-парсера (п.17 ревью): ответы с объявлением DOCTYPE отклоняются
+  до парсинга (внутренние сущности раскрывались бы стандартным ElementTree —
+  вектор «billion laughs»), размер ответа ограничен ``max_response_bytes``.
 """
 from __future__ import annotations
 
-import base64
 import os
-import urllib.error
-import urllib.request
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Any, Callable
+from functools import partial
+from typing import Any
 
-from agent.cli import Product, parse_date
-
-Transport = Callable[[str, bytes, dict[str, str], float], bytes]
+from agent.adapters.base import (
+    AdapterAuthError,
+    AdapterError,
+    AdapterResponseError,
+    ImportOutcome,
+    Transport,
+    basic_authorization,
+    build_outcome,
+    http_transport,
+)
+from agent.models import Product, parse_date
 
 # Запрос справочника товаров в XML-интерфейсе R:keeper (RK7 API).
 # Версия протокола и набор атрибутов зависят от установки — см. RkeeperConfig.
@@ -38,16 +54,21 @@ _PRODUCTS_QUERY = (
 )
 
 
-class RkeeperError(Exception):
+class RkeeperError(AdapterError):
     """Базовая ошибка адаптера R:keeper с понятным сообщением для пользователя."""
 
 
-class RkeeperAuthError(RkeeperError):
+class RkeeperAuthError(RkeeperError, AdapterAuthError):
     """Ошибка аутентификации (неверные учётные данные интерфейса)."""
 
 
-class RkeeperResponseError(RkeeperError):
+class RkeeperResponseError(RkeeperError, AdapterResponseError):
     """Некорректный или пустой ответ R:keeper."""
+
+
+# Обратная совместимость (волна 5, п.12): прежний собственный ``ImportResult``
+# заменён общим ``ImportOutcome`` из base.py; алиас сохраняет старые импорты.
+ImportResult = ImportOutcome
 
 
 @dataclass(frozen=True)
@@ -69,9 +90,10 @@ class RkeeperConfig:
     code_attr: str = "Code"            # атрибут с кодом товара
     unit_attr: str = "UnitName"        # атрибут с единицей измерения
     timeout: float = 10.0
+    max_response_bytes: int = 10 * 1024 * 1024  # защита от переполнения ответом
 
     @classmethod
-    def from_env(cls) -> "RkeeperConfig":
+    def from_env(cls) -> RkeeperConfig:
         base_url = os.environ.get("RK7_BASE_URL", "").rstrip("/")
         username = os.environ.get("RK7_USER", "")
         password = os.environ.get("RK7_PASSWORD", "")
@@ -91,30 +113,14 @@ class RkeeperConfig:
         return cls(base_url=base_url, station=station, username=username, password=password)
 
 
-def _http_post(url: str, body: bytes, headers: dict[str, str], timeout: float) -> bytes:
-    """Транспорт по умолчанию: один POST через стандартную библиотеку urllib."""
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise RkeeperAuthError(
-                f"R:keeper отклонил учётные данные интерфейса «{url}» (HTTP 401)"
-            ) from None
-        raise RkeeperError(f"R:keeper вернул HTTP {exc.code} для {url}") from None
-    except urllib.error.URLError as exc:
-        raise RkeeperError(f"Не удалось подключиться к R:keeper ({url}): {exc.reason}") from None
-
-
 def _authorization_header(config: RkeeperConfig) -> str:
     credentials = f"{config.station}\\{config.username}:{config.password}"
-    return "Basic " + base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    return basic_authorization(credentials)
 
 
 def fetch_product_directory(
     config: RkeeperConfig,
-    transport: Transport = _http_post,
+    transport: Transport = http_transport,
 ) -> list[dict[str, Any]]:
     """Запрашивает справочник товаров и возвращает сырые атрибуты элементов."""
     body = _PRODUCTS_QUERY.format(ref=config.ref_name).encode("utf-8")
@@ -124,10 +130,30 @@ def fetch_product_directory(
     }
     url = f"{config.base_url}/rk7api/v1"
     raw = transport(url, body, headers, config.timeout)
+    if len(raw) > config.max_response_bytes:
+        raise RkeeperResponseError(
+            f"Ответ R:keeper слишком велик: {len(raw)} байт "
+            f"(лимит {config.max_response_bytes}). Возможно, справочник избыточен — "
+            "уточните RefName/IgnoreInactive или увеличьте max_response_bytes."
+        )
     return _parse_directory(raw, config)
 
 
+# XML-интерфейс RK7 не использует DTD. Любое объявление DOCTYPE в ответе —
+# признак вредоносной нагрузки (внутренние сущности: «billion laughs»; внешние
+# сущности: XXE). Сканируем до парсинга: стандартный ElementTree внутренние
+# сущности раскрывает (п.17 ревью), defusedxml проект не подключает (чистая
+# стандартная библиотека), поэтому отклоняем такие ответы целиком.
+_DOCTYPE_RE = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
+
+
 def _parse_directory(raw: bytes, config: RkeeperConfig) -> list[dict[str, Any]]:
+    if _DOCTYPE_RE.search(raw):
+        raise RkeeperResponseError(
+            "Ответ R:keeper содержит объявление DOCTYPE, которое XML-интерфейс "
+            "RK7 не использует. Ответ отклонён из соображений безопасности "
+            "(внутренние/внешние сущности XML)."
+        )
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
@@ -167,34 +193,14 @@ def map_rk_item(item: dict[str, Any], config: RkeeperConfig) -> Product:
     )
 
 
-@dataclass
-class ImportResult:
-    """Результат импорта справочника: позиции и статистика пропусков."""
-
-    products: list[Product]
-    total: int
-    skipped: int  # позиции, не прошедшие маппинг (без наименования и т.п.)
-
-    @property
-    def imported(self) -> int:
-        return len(self.products)
-
-
 def import_products(
     config: RkeeperConfig,
-    transport: Transport = _http_post,
-) -> ImportResult:
-    """Полный сценарий импорта: запрос → маппинг → ImportResult.
+    transport: Transport = http_transport,
+) -> ImportOutcome:
+    """Полный сценарий импорта: запрос → маппинг → ImportOutcome.
 
     Позиции с ошибками маппинга пропускаются, но их число фиксируется
     в ``result.skipped`` для прозрачности аудита.
     """
     items = fetch_product_directory(config, transport)
-    products: list[Product] = []
-    skipped = 0
-    for item in items:
-        try:
-            products.append(map_rk_item(item, config))
-        except RkeeperError:
-            skipped += 1
-    return ImportResult(products=products, total=len(items), skipped=skipped)
+    return build_outcome(items, partial(map_rk_item, config=config))

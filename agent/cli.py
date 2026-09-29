@@ -10,42 +10,16 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-
-@dataclass(frozen=True)
-class Product:
-    name: str
-    quantity: float
-    unit: str
-    location: str
-    expires_at: date | None
-    status: str = "active"
-
-
-def parse_date(value: Any, name: str) -> date | None:
-    """Парсит дату ГГГГ-ММ-ДД; None/пустая строка означают «даты нет».
-
-    Волна 3 (п. «валидация входных данных» ревью): нестроковые значения
-    (число ``20260820``, список ``["2026"]``) раньше доезжали до
-    ``datetime.strptime`` и давали сырой ``TypeError`` без имени продукта.
-    Теперь это тот же ``ValueError``, что и для строки в неверном формате.
-    """
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str):
-        raise ValueError(
-            f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
-        )
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
-        raise ValueError(
-            f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
-        ) from None
+# Реестр источников импортируется на уровне модуля: волна 5 (ревью, п.13)
+# перенесла Product/parse_date в agent/models.py, поэтому цикла импортов
+# «cli ← registry ← adapters ← cli» больше нет — слои направленные:
+# models ← adapters ← cli.
+from agent.adapters.registry import available_sources, load_source
+from agent.models import Product, parse_date
 
 
 def load_products(path: Path) -> list[Product]:
@@ -60,13 +34,13 @@ def load_products(path: Path) -> list[Product]:
     elif isinstance(payload, dict):
         raw_items = payload.get("products", [])
     else:
-        raise ValueError(f"Неверная структура инвентаря в {path}: ожидается объект с полем «products» или список")
+        raise ValueError(f"Неверная структура инвентаря в {path}: ожидается объект с полем «products» или список")  # noqa: TRY004 — волна 3: валидация входа даёт ValueError, а не TypeError
     if not isinstance(raw_items, list):
-        raise ValueError(f"Поле «products» в {path} должно быть списком")
+        raise ValueError(f"Поле «products» в {path} должно быть списком")  # noqa: TRY004
     products: list[Product] = []
     for item in raw_items:
         if not isinstance(item, dict):
-            raise ValueError(f"Каждая позиция инвентаря должна быть объектом: {item!r}")
+            raise ValueError(f"Каждая позиция инвентаря должна быть объектом: {item!r}")  # noqa: TRY004
         if "name" not in item or item["name"] is None:
             raise ValueError("В позиции инвентаря отсутствует обязательное поле «name»")
         name = str(item["name"])
@@ -199,9 +173,11 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines += [
             "## Требуется ручной учёт",
             "",
-            "> Позиции вне активного учёта: остаток нулевой (POS-справочники "
-            "импортируются без остатков и сроков) или статус исключает позицию. "
-            "Подтвердите остаток и срок вручную, чтобы позиция попала в расчёт.",
+            (
+                "> Позиции вне активного учёта: остаток нулевой (POS-справочники "
+                "импортируются без остатков и сроков) или статус исключает позицию. "
+                "Подтвердите остаток и срок вручную, чтобы позиция попала в расчёт."
+            ),
             "",
             "| Продукт | Остаток | Место | Статус |",
             "|---|---:|---|---|",
@@ -314,12 +290,16 @@ def render_html(result: dict[str, Any],
         # Зеркало MD-секции «Требуется ручной учёт» (п.10 ревью).
         parts += [
             "<h2>Требуется ручной учёт</h2>",
-            "<blockquote>Позиции вне активного учёта: остаток нулевой "
-            "(POS-справочники импортируются без остатков и сроков) или статус "
-            "исключает позицию. Подтвердите остаток и срок вручную, чтобы "
-            "позиция попала в расчёт.</blockquote>",
-            "<table><tr><th>Продукт</th><th>Остаток</th><th>Место</th>"
-            "<th>Статус</th></tr>",
+            (
+                "<blockquote>Позиции вне активного учёта: остаток нулевой "
+                "(POS-справочники импортируются без остатков и сроков) или статус "
+                "исключает позицию. Подтвердите остаток и срок вручную, чтобы "
+                "позиция попала в расчёт.</blockquote>"
+            ),
+            (
+                "<table><tr><th>Продукт</th><th>Остаток</th><th>Место</th>"
+                "<th>Статус</th></tr>"
+            ),
         ]
         for item in ignored_items:
             parts.append(
@@ -384,23 +364,25 @@ def load_family_allergens(profile: Path, *, allow_no_profile: bool = False) -> t
                 "(в отчёте появится явное предупреждение)."
             )
         return set(), [
-            "⚠️ Hard-filter аллергенов ОТКЛЮЧЁН: профиль семьи не найден "
-            f"({profile}). Подсказки ниже НЕ проверены на аллергены "
-            "(подтверждено флагом --allow-no-profile)."
+            (
+                "⚠️ Hard-filter аллергенов ОТКЛЮЧЁН: профиль семьи не найден "
+                f"({profile}). Подсказки ниже НЕ проверены на аллергены "
+                "(подтверждено флагом --allow-no-profile)."
+            )
         ]
     allergens = load_allergens(profile)
     if not allergens:
         return set(), [
-            f"⚠️ Hard-filter аллергенов фактически не работает: профиль {profile} "
-            "не содержит ни одного аллергена (поле «allergens» пустое). "
-            "Подсказки ниже НЕ проверены на аллергены."
+            (
+                f"⚠️ Hard-filter аллергенов фактически не работает: профиль {profile} "
+                "не содержит ни одного аллергена (поле «allergens» пустое). "
+                "Подсказки ниже НЕ проверены на аллергены."
+            )
         ]
     return allergens, []
 
 
 def main() -> int:
-    from agent.adapters.registry import available_sources, load_source
-
     parser = argparse.ArgumentParser(description="SmartKitchen Family deterministic CLI agent")
     parser.add_argument("--inventory", type=Path, default=Path("data/inventory.json"),
                         help="JSON-файл инвентаря (источник «json»)")
@@ -408,7 +390,7 @@ def main() -> int:
                         help="источник данных: json или " + ", ".join(available_sources()))
     parser.add_argument("--out", type=Path, default=Path("reports/expiry_report.md"))
     parser.add_argument("--json-out", type=Path, default=None)
-    parser.add_argument("--as-of", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--as-of", type=date.fromisoformat, default=date.today())  # noqa: DTZ011 — дата расчёта по умолчанию = локальный «сегодня»
     parser.add_argument("--warning-days", type=int, default=3)
     parser.add_argument("--suggest-menu", action="store_true",
                         help="добавить в отчёт идеи блюд от DeepSeek (нужен DEEPSEEK_API_KEY)")
@@ -448,7 +430,7 @@ def main() -> int:
     else:
         try:
             products = load_source(args.source)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — любой сбой адаптера = понятная ошибка запуска
             parser.error(f"Источник «{args.source}» недоступен: {exc}")
     result = analyze(products, args.as_of, args.warning_days)
     markdown = render_markdown(result)
@@ -457,18 +439,24 @@ def main() -> int:
     menu_ideas: tuple[list[str], str] | None = None
     if args.suggest_menu:
         from agent.adapters.deepseek import suggest_menu_ideas
-        from agent.allergens import expand_allergens, filter_suggestions, matched_profile_allergens
+        from agent.allergens import (
+            expand_allergens,
+            filter_suggestions,
+            matched_profile_allergens,
+        )
         urgent = result["groups"]["urgent"]
         candidates = [p for p in products
                       if p.name in {item["name"] for item in urgent}]
         notices = [
-            "⚠️ Неподтверждённая LLM-подсказка: проверьте состав и аллергены "
-            "вручную перед приготовлением."
+            (
+                "⚠️ Неподтверждённая LLM-подсказка: проверьте состав и аллергены "
+                "вручную перед приготовлением."
+            )
         ]
         notices += allergen_warnings
         try:
             ideas = suggest_menu_ideas(candidates, allergens=sorted(allergens))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — п.6: любой сбой LLM не роняет отчёт
             if args.strict_llm:
                 parser.error(f"DeepSeek недоступен: {exc}")
             # П.6 ревью: детерминированный отчёт важнее LLM-подсказок. Публикуем

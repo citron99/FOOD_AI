@@ -1,10 +1,8 @@
 import json
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-
-sys.path.insert(0, str(Path(__file__).parents[1]))
+from typing import ClassVar
 
 from agent.adapters.base import AdapterError
 from agent.allergens import (
@@ -84,7 +82,7 @@ class MatchingTests(unittest.TestCase):
 
 
 class SynonymTests(unittest.TestCase):
-    SYNONYMS = {"глютен": {"пшеница", "мука"}, "молоко": {"сыр", "лактоза"}}
+    SYNONYMS: ClassVar[dict[str, set[str]]] = {"глютен": {"пшеница", "мука"}, "молоко": {"сыр", "лактоза"}}
 
     def test_expand_adds_synonyms_and_keeps_the_term(self):
         self.assertEqual(

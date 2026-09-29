@@ -10,15 +10,15 @@
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from agent.adapters import frontpad, iiko, quickresto, rkeeper, saby, yuma
-from agent.adapters.base import AdapterError, ImportOutcome
-from agent.cli import Product
+from agent.adapters.base import AdapterError
+from agent.models import Product
 
 
 def _products(outcome: object) -> list[Product]:
-    """Нормализует результат адаптера (ImportOutcome/ImportResult) в список."""
+    """Возвращает список продуктов из результата адаптера (ImportOutcome)."""
     products = getattr(outcome, "products", None)
     if products is None:
         raise AdapterError(f"Адаптер вернул результат без списка продуктов: {outcome!r}")

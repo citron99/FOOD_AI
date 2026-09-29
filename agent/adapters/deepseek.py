@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Iterable
+from collections.abc import Iterable
 
 from agent.adapters.base import (
-    AdapterAuthError,
     AdapterError,
     AdapterResponseError,
     RestConfig,
@@ -36,7 +35,7 @@ from agent.adapters.base import (
     http_transport,
 )
 from agent.allergens import normalize
-from agent.cli import Product
+from agent.models import Product
 
 SYSTEM = "deepseek"
 DEFAULT_BASE_URL = "https://api.deepseek.com"

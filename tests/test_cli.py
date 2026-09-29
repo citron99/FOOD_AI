@@ -8,8 +8,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-
 from agent.adapters.base import AdapterError
 from agent.cli import (
     Product,
@@ -311,10 +309,10 @@ class SuggestMenuReportTests(unittest.TestCase):
             return self.IDEAS
 
         stderr = io.StringIO()
-        with mock.patch("agent.adapters.deepseek.suggest_menu_ideas", side_effect=fake_suggest):
-            with mock.patch.object(sys, "argv", argv):
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
-                    code = main()
+        with mock.patch("agent.adapters.deepseek.suggest_menu_ideas", side_effect=fake_suggest), \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = main()
         return code, out, calls, stderr.getvalue(), html_path
 
     def test_allergen_dishes_are_hidden_and_audited(self):
@@ -407,10 +405,10 @@ class LLMDegradationTests(unittest.TestCase):
 
         stderr = io.StringIO()
         with mock.patch("agent.adapters.deepseek.suggest_menu_ideas",
-                        side_effect=fake_suggest):
-            with mock.patch.object(sys, "argv", argv):
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
-                    code = main()
+                        side_effect=fake_suggest), \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = main()
         return code, out, html_path, stderr.getvalue()
 
     def test_llm_failure_still_publishes_report(self):
@@ -461,10 +459,10 @@ class MenuIdeasHtmlTests(unittest.TestCase):
 
         stderr = io.StringIO()
         with mock.patch("agent.adapters.deepseek.suggest_menu_ideas",
-                        side_effect=fake_suggest):
-            with mock.patch.object(sys, "argv", argv):
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
-                    code = main()
+                        side_effect=fake_suggest), \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = main()
         return code, out, html_path
 
     def test_html_contains_menu_ideas(self):
