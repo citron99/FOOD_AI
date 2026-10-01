@@ -1,0 +1,23 @@
+[Unit]
+Description=Ежедневный отчёт SmartKitchen Family (07:00, пояс задан в OnCalendar)
+
+[Timer]
+Unit=food-ai-report.service
+# Часовой пояс задан прямо в выражении, поэтому прогон случится в 07:00 по Москве
+# независимо от того, какой часовой пояс выставлен на сервере.
+# Основание: systemd.time(5) — «Timezone can be specified as the literal string "UTC",
+# or the local timezone, ... or the timezone in the IANA timezone database format»,
+# примеры оттуда: «*-*-* 00:00:00 UTC», «Mon *-*-* 00:00:00 Pacific/Auckland»;
+# «If omitted, it defaults to local».
+# install.sh подставляет сюда значение --timezone (только имя вида Area/Location).
+OnCalendar=*-*-* 07:00:00 Europe/Moscow
+# Если сервер был выключен в момент срабатывания — запустить при включении.
+Persistent=true
+# Разносим старты, чтобы не упираться в лимиты API ровно на целой минуте.
+RandomizedDelaySec=120
+# systemd.timer: «AccuracySec= Specify the accuracy the timer shall elapse with.
+# Defaults to 1min» — значение равно умолчанию, строка оставлена для явности.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

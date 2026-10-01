@@ -32,18 +32,25 @@ python -m unittest discover -s tests -v
 
 ## Деплой на хостинг (Beget)
 
-Проект работает на shared-хостинге Beget без установки зависимостей — нужен только Python 3 (предустановлен на тарифах). Пример рабочего развёртывания: проект лежит в домашней директории `~/FOOD_AI`, отчёт публикуется как статическая страница `https://<логин>.beget.tech/food_ai/`.
+Сторонних пакетов у проекта нет, но нужен **Python 3.11+** (`pyproject.toml`: `requires-python = ">=3.11"`). Из коробки на виртуальном хостинге Beget доступны только `/usr/bin/python2.7`, `python3.6` и `python3.7` — на них агент **не запускается**: проверено на Python 3.7.17, `import agent.cli` падает на строке `agent/adapters/base.py:32` (`Transport = Callable[[str, bytes | None, ...], bytes]` → `TypeError: unsupported operand type(s) for |`). Поэтому интерпретатор нужной версии собирается в `~/.local` по документированной Beget процедуре — это автоматизировано скриптом `deploy/beget_bootstrap.sh`.
 
-1. Загрузите каталог проекта в домашнюю директорию хостинга (`/home/<логин>/FOOD_AI`) через файловый менеджер (Sprutio) или FTP. Веб-папка сайта — `/home/<логин>/<логин>.beget.tech/public_html`.
-2. Создайте в веб-папке каталог `food_ai/` — туда будет писаться HTML-отчёт.
-3. В панели Beget откройте раздел **Crontab → Мастер заданий**, тип «Произвольная команда», и добавьте задание (замените `<логин>` на свой логин Beget):
+Полная инструкция (три маршрута: shared-хостинг + cron, публикация из GitHub Actions по FTP, Docker на VPS) — в [`docs/deploy_beget.md`](docs/deploy_beget.md). Краткий вариант развёртывания на shared-хостинге: проект лежит в `~/FOOD_AI`, отчёт публикуется статической страницей `https://<логин>.beget.tech/food_ai/`. На аккаунтах SpaceWeb (панель `cp.sweb.ru`) технический домен другой — `<логин>.<имя-сайта>.swtest.ru`, временный `<логин>.temp.swtest.ru`, а FTP доступен только по IP сервера: соответствия сведены в таблицу в начале гайда.
+
+**Выбран маршрут B** (публикация из GitHub Actions по FTP, 2026-09-30): отчёт собирается на раннере GitHub и выгружается на хостинг, поэтому ни SSH, ни Python на хостинге не нужны. Workflow лежит в репозитории — [`.github/workflows/publish-report.yml`](.github/workflows/publish-report.yml). Из настроек нужны секреты `FTP_HOST`, `FTP_USER`, `FTP_PASSWORD` (плюс необязательные `DEEPSEEK_API_KEY` и переменная `PUBLIC_URL` для сверки опубликованного по sha256); отчёт собирается из `data/inventory.json` в репозитории, так как POS в локальной сети заведения недостижим и из GitHub. Фактически развёрнуто на SpaceWeb: сайт «ЕДА» (поддомен `eda.citron99.garden`, корень `eda_citron99_garden/public_html`), отчёт публикуется в корне сайта как `index.html`; доступ по техническому домену `http://eda.citron99.garden.swtest.ru` проверен по HTTP 200 и sha256 (2026-10-01).
+
+Для маршрута C (VPS/облачный сервер + Docker) готовый комплект лежит в [`deploy/vps/`](deploy/vps/README.md): `install.sh` — идемпотентная установка (каталоги, права под UID пользователя контейнера, systemd-юниты, nginx, контрольный прогон), `run-report.sh` — один прогон (`docker pull` → запуск CLI → проверка результата → необязательная публикация → запись в `cron.log`), юниты `food-ai-report.{service,timer}` и конфиг nginx, который отдаёт только файлы отчёта и ничего больше. Рабочие настройки (`food_ai.conf`, `food_ai.env`, `data/`) живут в `/opt/food_ai`, а не в клоне репозитория, поэтому `git pull` их не затирает. Секреты передаются контейнеру только через `--env-file` с правами 600 и никогда — флагами командной строки.
+
+1. Включите SSH для аккаунта (раздел **FTP** панели: у FTP-аккаунта можно включить SSH) и загрузите каталог проекта в домашнюю директорию (`/home/<первая буква логина>/<логин>/FOOD_AI`) через файловый менеджер Sprutio или FTP. Веб-папка сайта — `.../<домен>/public_html`.
+2. Соберите Python 3.11 (один раз, ~20–40 минут): `ssh <логин>@<логин>.beget.tech`, затем `ssh localhost -p222` (вход в контейнер аккаунта), затем `bash ~/FOOD_AI/deploy/beget_bootstrap.sh --project ~/FOOD_AI`.
+3. Создайте в веб-папке каталог `food_ai/` — туда будет писаться HTML-отчёт.
+4. В панели Beget откройте раздел **Crontab → Мастер заданий**, тип «Произвольная команда», и добавьте задание (замените `<логин>` и `<букву>` на свои):
 
    ```bash
-   cd /home/<логин>/FOOD_AI && python3 -m agent.cli --inventory data/inventory.json --warning-days 3 --out reports/expiry_report.md --html-out /home/<логин>/<логин>.beget.tech/public_html/food_ai/index.html >> /home/<логин>/FOOD_AI/cron.log 2>&1
+   cd /home/<буква>/<логин>/FOOD_AI && $HOME/.local/bin/python3.11 -m agent.cli --inventory data/inventory.json --warning-days 3 --out reports/expiry_report.md --html-out /home/<буква>/<логин>/<домен>/public_html/food_ai/index.html >> /home/<буква>/<логин>/FOOD_AI/cron.log 2>&1
    ```
 
-4. Расписание: ежедневно в 07:00 (минута `0`, час `7`, дни/месяцы/дни недели — `*`).
-5. Лог выполнения — в файле `~/FOOD_AI/cron.log` (виден в файловом менеджере). Если страница не обновляется, смотрите его первым делом: там будут версия Python и traceback.
+5. Расписание: ежедневно в 07:00 (минута `0`, час `7`, дни/месяцы/дни недели — `*`). Перед сохранением нажмите кнопку проверки — панель покажет лог и код возврата.
+6. Лог выполнения — в файле `~/FOOD_AI/cron.log` (виден в файловом менеджере). Если страница не обновляется, смотрите его первым делом: там будут версия Python и traceback.
 
 Особенности:
 
@@ -73,6 +80,11 @@ docker run --rm ghcr.io/citron99/food_ai:latest
 docker run --rm a08037/food_ai:latest
 ```
 
+Теги: `main` и короткий SHA — всегда текущий код ветки; `latest` проставляется и на релизный тег,
+и на `main` (строка `type=raw,value=latest,enable={{is_default_branch}}` в `.github/workflows/tests.yml`).
+До этого исправления `latest` обновлялся только на semver-тегах и отставал от `main` — если ваш
+`latest` старше ожидаемого, берите тег `main`.
+
 Релизы версионируются тегами `v*` (например `v1.0.0`): CI публикует образы с тегами `1.0.0` и `1.0` в обоих реестрах, `latest` всегда указывает на последний `main`.
 
 ### Docker Compose
@@ -85,6 +97,8 @@ docker-compose run --rm food_ai --as-of 2026-08-18 --html-out reports/expiry_rep
 ```
 
 Требуется Docker Compose **v2.24+**: файл использует длинный синтаксис `env_file` с `required: false`, чтобы запуск работал и без `.env`. На более старых версиях Compose замените блок `env_file` на короткий `env_file: .env` и создайте файл `.env` (можно пустой, скопировав `.env.example`).
+
+Поведение проверено на Compose v5.5.1 (`docker compose config`): без `.env` файл разбирается с кодом 0 и блок `env_file` просто не даёт переменных; с `.env` его строки попадают в `environment` сервиса. Значит секретов в `docker-compose.yml` нет и быть не должно — они читаются только из локального `.env` (в репозиторий он не попадает) или из переменных окружения.
 
 Полезные варианты:
 

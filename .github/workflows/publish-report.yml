@@ -1,0 +1,163 @@
+# FOOD_AI / SmartKitchen Family — ежедневная публикация отчёта о сроках годности.
+#
+# Маршрут B (docs/deploy_beget.md): отчёт собирается на раннере GitHub и выгружается
+# на shared-хостинг по FTP. Python на хостинге не нужен вообще, SSH тоже — поэтому
+# этот маршрут работает даже там, где интерпретатор старше требуемых 3.11.
+#
+# Что задать в Settings → Secrets and variables → Actions:
+#   Secrets:
+#     FTP_HOST         77.222.40.35 — у аккаунта нет DNS-имени для FTP, только IP
+#     FTP_USER         отдельный FTP-аккаунт (см. ниже, почему не основной)
+#     FTP_PASSWORD     его пароль
+#     DEEPSEEK_API_KEY необязателен: без него отчёт выходит без идей блюд
+#   Variables:
+#     FTP_DIR          путь от корня FTP-аккаунта до каталога отчёта. Пусто (по умолчанию):
+#                      аккаунт ограничен каталогом отчёта и заливка идёт прямо в его корень
+#     PUBLIC_URL       адрес сайта отчёта, например http://eda.citron99.garden.swtest.ru
+#                      (необязательно: включает проверку после загрузки)
+#
+# Сайт «ЕДА» в панели SpaceWeb: домен eda.citron99.garden (+ технический
+# eda.citron99.garden.swtest.ru, который гарантированно резолвится публично — его
+# и используйте в PUBLIC_URL, пока основной домен не развернулся). Корень сайта —
+# /home/c/citron99ra/eda_citron99_garden/public_html, отчёт публикуется прямо в нём
+# как index.html, поэтому FTP_DIR для отдельного аккаунта, ограниченного этим сайтом,
+# остаётся пустым.
+#
+# Почему отдельный FTP-аккаунт, а не основной: пароль основного аккаунта — это пароль
+# от панели управления хостингом. Секрет в GitHub не должен давать доступ к панели,
+# поэтому аккаунт создаётся с «папкой доступа» = eda_citron99_garden/public_html
+# (панель хостинга: FTP-аккаунты → Добавить FTP-аккаунт). Для основного аккаунта,
+# который видит всю домашнюю папку, вместо этого задайте
+# FTP_DIR=eda_citron99_garden/public_html.
+#
+# Почему --insecure у curl: сертификат FTP-сервера выписан на *.sweb.ru, а аккаунт
+# доступен только по IP 77.222.40.35, поэтому проверка имени хоста не может пройти
+# никогда (проверено: schannel/OpenSSL возвращают SEC_E_WRONG_PRINCIPAL). --insecure
+# сохраняет шифрование канала (пароль не идёт открытым текстом), но не удостоверяет
+# сервер. Полноценная аутентификация возможна только по SFTP, а он требует SSH.
+
+name: publish-report
+
+on:
+  schedule:
+    # 07:00 МСК = 04:00 UTC: cron в Actions всегда по UTC.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "Дата отчёта (ГГГГ-ММ-ДД). Пусто — сегодняшняя по Europe/Moscow."
+        required: false
+        default: ""
+      suggest_menu:
+        description: "Запрашивать идеи блюд у DeepSeek (нужен DEEPSEEK_API_KEY)"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+# Два прогона одновременно писали бы одни и те же файлы: при перекрытии
+# отменяем новый, а не прерываем уже начатую публикацию.
+concurrency:
+  group: publish-report
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      # --as-of по умолчанию = date.today(), поэтому пояс раннера задаёт дату отчёта.
+      TZ: Europe/Moscow
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Собрать отчёт
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          args=(
+            --inventory data/inventory.json
+            --warning-days 3
+            --out reports/expiry_report.md
+            --html-out reports/expiry_report.html
+            --json-out reports/expiry_report.json
+          )
+          as_of="${{ github.event.inputs.as_of }}"
+          if [ -n "$as_of" ]; then args+=(--as-of "$as_of"); fi
+          # --suggest-menu без --strict-llm: если DeepSeek недоступен или ключа нет,
+          # отчёт о сроках всё равно выпускается (проверено: rc=0 + предупреждение
+          # в stderr). Со --strict-llm тот же случай даёт rc=2 и сорвал бы cron.
+          want_ideas="${{ github.event.inputs.suggest_menu }}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "$want_ideas" != "false" ]; then
+            args+=(--suggest-menu)
+          fi
+          python -m agent.cli "${args[@]}"
+
+      - name: Проверить, что отчёт собран
+        run: |
+          set -euo pipefail
+          for f in reports/expiry_report.html reports/expiry_report.md reports/expiry_report.json; do
+            test -s "$f" || { echo "::error::файл $f пуст или отсутствует"; exit 1; }
+          done
+          ls -l reports/
+
+      - name: Выгрузить на хостинг по FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in FTP_HOST FTP_USER FTP_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::не задан секрет $name (Settings → Secrets and variables → Actions)"
+              exit 1
+            fi
+          done
+          # FTP_DIR — путь от корня FTP-аккаунта до каталога отчёта. Пусто: аккаунт
+          # ограничен каталогом отчёта (сайт «ЕДА»), заливка идёт прямо в корень —
+          # верно для отдельного аккаунта с «папкой доступа». Заполнено
+          # (eda_citron99_garden/public_html): аккаунт видит всю домашнюю папку —
+          # так работает основной.
+          dir="${{ vars.FTP_DIR }}"
+          dir="${dir#/}"; dir="${dir%/}"
+          if [ -n "$dir" ]; then base="ftp://${FTP_HOST}/${dir}"; else base="ftp://${FTP_HOST}"; fi
+          # HTML публикуется как index.html: адрес каталога открывает отчёт сразу.
+          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
+               --user "${FTP_USER}:${FTP_PASSWORD}" \
+               -T reports/expiry_report.html "${base}/index.html"
+          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
+               --user "${FTP_USER}:${FTP_PASSWORD}" \
+               -T reports/expiry_report.md "${base}/expiry_report.md"
+          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
+               --user "${FTP_USER}:${FTP_PASSWORD}" \
+               -T reports/expiry_report.json "${base}/expiry_report.json"
+          echo "Выгружено в ${base}/"
+
+      - name: Проверить публикацию по HTTP
+        if: vars.PUBLIC_URL != ''
+        run: |
+          set -euo pipefail
+          base="${PUBLIC_URL%/}"
+          for pair in "index.html:reports/expiry_report.html" \
+                      "expiry_report.md:reports/expiry_report.md" \
+                      "expiry_report.json:reports/expiry_report.json"; do
+            remote="${pair%%:*}"; local="${pair#*:}"
+            code=$(curl -sS -o "$RUNNER_TEMP/dl" -w '%{http_code}' --retry 3 --retry-delay 5 "$base/$remote")
+            [ "$code" = "200" ] || { echo "::error::$base/$remote вернул HTTP $code"; exit 1; }
+            remote_sum=$(sha256sum < "$RUNNER_TEMP/dl" | cut -d' ' -f1)
+            local_sum=$(sha256sum < "$local" | cut -d' ' -f1)
+            [ "$remote_sum" = "$local_sum" ] || {
+              echo "::error::$remote не совпадает с $local (sha256 $remote_sum ≠ $local_sum)"; exit 1; }
+            echo "OK $base/$remote HTTP 200, sha256 совпадает"
+          done
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}

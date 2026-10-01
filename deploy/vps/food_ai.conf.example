@@ -1,0 +1,52 @@
+# SmartKitchen Family — конфигурация прогона отчёта на VPS.
+#
+# Файл читается deploy/vps/run-report.sh как обычный shell-скрипт, поэтому
+# значения берутся в кавычки. СЕКРЕТОВ ЗДЕСЬ НЕТ — они в food_ai.env (chmod 600).
+#
+# Рабочая копия: /opt/food_ai/food_ai.conf (создаёт install.sh, права 644).
+
+# Образ из реестра. Теги main и короткий SHA всегда соответствуют коду ветки;
+# latest догоняет main только после фикса в .github/workflows/tests.yml.
+IMAGE="ghcr.io/citron99/food_ai:main"
+
+# Корень установки. Все пути ниже — относительно него.
+APP_DIR="/opt/food_ai"
+REPORTS_DIR="/opt/food_ai/reports"
+DATA_DIR="/opt/food_ai/data"
+
+# Часовой пояс контейнера. Обязателен: без TZ «сегодня» считается по UTC,
+# и утренний прогон в 07:00 МСК возьмёт вчерашнюю дату.
+TIMEZONE="Europe/Moscow"
+
+# Пути ВНУТРИ контейнера. /app/data смонтирован из DATA_DIR (read-only),
+# поэтому реальный инвентарь и профиль семьи лежат на хосте, а не в образе.
+INVENTORY="data/inventory.json"
+PROFILE="data/family_profile.json"
+
+# За сколько дней до истечения срока считать продукт «требующим внимания».
+WARNING_DAYS="3"
+
+# Дополнительные аргументы CLI одной строкой, например:
+#   EXTRA_ARGS="--as-of 2026-08-18"
+#   EXTRA_ARGS="--source iiko"          # токены — в food_ai.env
+EXTRA_ARGS=""
+
+# LLM-подсказки блюд. Требуют DEEPSEEK_API_KEY в food_ai.env.
+# При недоступном DeepSeek отчёт всё равно пишется (код возврата 0),
+# а сбой виден в секции «Идеи блюд» и в cron.log.
+SUGGEST_MENU="false"
+# true — падать с кодом 2, если DeepSeek недоступен (отчёт НЕ пишется).
+STRICT_LLM="false"
+
+# Обновлять образ перед каждым прогоном. Сбой pull не фатален —
+# прогон продолжится на локальной копии, предупреждение попадёт в cron.log.
+PULL_IMAGE="true"
+
+# UID/GID пользователя внутри образа (appuser). Нужны, чтобы каталог отчётов
+# на хосте был доступен контейнеру на запись. install.sh определяет их сам
+# через `docker run --entrypoint id`; вручную менять не нужно.
+IMAGE_UID="10001"
+IMAGE_GID="999"
+
+# Лимит cron.log в байтах перед ротацией в cron.log.1.
+LOG_MAX_BYTES="1048576"

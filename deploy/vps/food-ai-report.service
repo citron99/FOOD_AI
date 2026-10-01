@@ -1,0 +1,30 @@
+[Unit]
+Description=SmartKitchen Family — отчёт о сроках годности (Docker)
+Documentation=https://github.com/citron99/FOOD_AI/blob/main/docs/deploy_beget.md
+# docker.service нужен: скрипт обращается к /var/run/docker.sock.
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/food-ai-report
+# install.sh подставляет сюда фактический каталог установки и путь к скрипту;
+# без этого systemd искал бы конфиг в /opt/food_ai независимо от --app-dir.
+Environment=APP_DIR=/opt/food_ai
+# pull образа + прогон контейнера: даём запас, но не бесконечно.
+TimeoutStartSec=15min
+
+# Прогон фоновый и не должен отъедать ресурсы у остальных сервисов VPS.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Ограничения безопасности. /opt остаётся доступным на запись (нужно для reports/),
+# привилегии не повышаются, /tmp у юнита свой.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
