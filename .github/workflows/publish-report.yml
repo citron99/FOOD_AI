@@ -13,8 +13,8 @@
 #   Variables:
 #     FTP_DIR          путь от корня FTP-аккаунта до каталога отчёта. Пусто (по умолчанию):
 #                      аккаунт ограничен каталогом отчёта и заливка идёт прямо в его корень
-#     PUBLIC_URL       адрес сайта отчёта, например http://eda.citron99.garden.swtest.ru
-#                      (необязательно: включает проверку после загрузки)
+#     PUBLIC_URL       (необязательно) переопределяет адрес сайта отчёта для проверки
+#                      после загрузки; по умолчанию адрес зашит в шаге проверки
 #
 # Сайт «ЕДА» в панели SpaceWeb: домен eda.citron99.garden (+ технический
 # eda.citron99.garden.swtest.ru, который гарантированно резолвится публично — его
@@ -143,7 +143,11 @@ jobs:
           echo "Выгружено в ${base}/"
 
       - name: Проверить публикацию по HTTP
-        if: vars.PUBLIC_URL != ''
+        # Адрес зашит прямо в workflow: GitHub периодически глушит создание переменных
+        # на репозитории (антиабьюз, 422), а адрес не секретный. Переменная PUBLIC_URL,
+        # если появится, переопределит его.
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL || 'http://eda.citron99.garden.swtest.ru' }}
         run: |
           set -euo pipefail
           base="${PUBLIC_URL%/}"
@@ -159,5 +163,3 @@ jobs:
               echo "::error::$remote не совпадает с $local (sha256 $remote_sum ≠ $local_sum)"; exit 1; }
             echo "OK $base/$remote HTTP 200, sha256 совпадает"
           done
-        env:
-          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
