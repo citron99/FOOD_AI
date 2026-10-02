@@ -269,12 +269,12 @@ def render_html(result: dict[str, Any],
         f"<tr><td>Вне активного учёта</td><td>{s['ignored']}</td></tr>",
         "</table>",
     ]
-    for title, key, note in [
+    for section_title, key, note in [
         ("Просроченные продукты", "expired", "Не использовать без проверки безопасности и решения пользователя."),
         ("Продукты с приближающимся сроком", "urgent", "Рекомендуется включить в ближайшее меню."),
         ("Активные продукты без даты срока", "no_date", "Нужно уточнить срок вручную, если он критичен для безопасности."),
     ]:
-        parts += [f"<h2>{_esc(title)}</h2>", f"<blockquote>{_esc(note)}</blockquote>"]
+        parts += [f"<h2>{_esc(section_title)}</h2>", f"<blockquote>{_esc(note)}</blockquote>"]
         items = result["groups"][key]
         if not items:
             parts.append("<p>Нет позиций.</p>")
