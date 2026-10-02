@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ЕДА — SmartKitchen Family</title>
+<style>
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;
+margin:0 auto;padding:24px;color:#1a1a2e;background:#fafafa}
+h1{font-size:1.6rem}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:2rem}
+@media (max-width:640px){.modes{grid-template-columns:1fr}}
+.mode{display:block;background:#fff;border:1px solid #e0e0e0;border-radius:8px;
+padding:24px;text-decoration:none;color:inherit}
+.mode:hover,.mode:focus{border-color:#f0b400;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.mode h2{margin:0 0 8px;font-size:1.3rem;border-bottom:none;padding-bottom:0}
+.mode p{margin:0;color:#555;font-size:.95rem}
+footer{margin-top:3rem;font-size:.85rem;color:#888;border-top:1px solid #e0e0e0;padding-top:12px}
+</style>
+</head>
+<body>
+<h1>ЕДА — контроль сроков годности</h1>
+<p>SmartKitchen Family. Выберите режим учёта:</p>
+<div class="modes">
+<a class="mode" href="/dom/">
+<h2>Дом</h2>
+<p>Сроки годности домашних продуктов, что использовать в ближайшие дни и идеи блюд с учётом аллергенов семьи.</p>
+</a>
+<a class="mode" href="/cafe/">
+<h2>Кафе.Ресторан</h2>
+<p>Учёт продуктов заведения: сроки годности по номенклатуре и список позиций ручного учёта.</p>
+</a>
+</div>
+<footer>Отчёты обновляются ежедневно в 07:00 (МСК) · SmartKitchen Family</footer>
+</body>
+</html>

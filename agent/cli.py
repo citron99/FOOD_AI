@@ -235,22 +235,31 @@ def _ideas_to_html(ideas: str) -> str:
 
 
 def render_html(result: dict[str, Any],
-                menu_ideas: tuple[list[str], str] | None = None) -> str:
+                menu_ideas: tuple[list[str], str] | None = None,
+                *, title: str | None = None) -> str:
     """Автономная HTML-страница отчёта без внешних зависимостей.
 
     Нужна для публикации отчёта на хостинге (например, по cron на Beget),
     где нет библиотек конвертации Markdown. Секция идей блюд (п.9 ревью)
     раньше дописывалась только в Markdown после рендера — на cron публиковался
     HTML без неё; теперь оба рендера получают одни и те же ``menu_ideas``.
+
+    ``title`` задаёт <title> и <h1> (на сайт публикуются отчёты разных
+    режимов — «Дом» и «Кафе.Ресторан» — и должны отличаться в браузере);
+    без неё заголовки прежние. Ссылка «На главную» ведёт на корень сайта,
+    куда публикуется стартовая страница с выбором режима.
     """
     s = result["summary"]
+    page_title = title if title else "SmartKitchen Family — отчёт о продуктах"
+    h1 = title if title else "SmartKitchen Family — отчёт о срочных продуктах"
     parts = [
         "<!DOCTYPE html>", '<html lang="ru">', "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>SmartKitchen Family — отчёт о продуктах</title>",
+        f"<title>{_esc(page_title)}</title>",
         f"<style>{_PAGE_CSS}</style>", "</head>", "<body>",
-        "<h1>SmartKitchen Family — отчёт о срочных продуктах</h1>",
+        '<nav><a href="/">← На главную</a></nav>',
+        f"<h1>{_esc(h1)}</h1>",
         "<blockquote>Дата расчёта: <b>", _esc(result["as_of"]), "</b>. Порог предупреждения: <b>",
         _esc(result["warning_days"]), " дн.</b></blockquote>",
         "<h2>Сводка</h2>", "<table><tr><th>Категория</th><th>Количество</th></tr>",
@@ -405,6 +414,9 @@ def main() -> int:
                              "отключён, а в отчёте появится явное предупреждение")
     parser.add_argument("--html-out", type=Path, default=None,
                         help="дополнительно записать отчёт как автономную HTML-страницу")
+    parser.add_argument("--title", default=None,
+                        help="заголовок HTML-отчёта (<title> и <h1>); нужен, когда на "
+                             "сайт публикуются отчёты разных режимов (Дом, Кафе.Ресторан)")
     args = parser.parse_args()
     if args.warning_days < 0:
         parser.error("--warning-days должен быть неотрицательным")
@@ -488,7 +500,10 @@ def main() -> int:
     args.out.write_text(markdown, encoding="utf-8")
     if args.html_out:
         args.html_out.parent.mkdir(parents=True, exist_ok=True)
-        args.html_out.write_text(render_html(result, menu_ideas=menu_ideas), encoding="utf-8")
+        args.html_out.write_text(
+            render_html(result, menu_ideas=menu_ideas, title=args.title),
+            encoding="utf-8",
+        )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

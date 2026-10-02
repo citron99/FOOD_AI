@@ -19,9 +19,11 @@
 # Сайт «ЕДА» в панели SpaceWeb: домен eda.citron99.garden (+ технический
 # eda.citron99.garden.swtest.ru, который гарантированно резолвится публично — его
 # и используйте в PUBLIC_URL, пока основной домен не развернулся). Корень сайта —
-# /home/c/citron99ra/eda_citron99_garden/public_html, отчёт публикуется прямо в нём
-# как index.html, поэтому FTP_DIR для отдельного аккаунта, ограниченного этим сайтом,
-# остаётся пустым.
+# /home/c/citron99ra/eda_citron99_garden/public_html. Публикуется три блока:
+#   index.html            стартовая страница site/index.html с выбором режима;
+#   dom/                  домашний отчёт (data/inventory.json, идеи блюд DeepSeek);
+#   cafe/                 отчёт «Кафе.Ресторан» (data/cafe_inventory.json, без LLM).
+# FTP_DIR для отдельного аккаунта, ограниченного этим сайтом, остаётся пустым.
 #
 # Почему отдельный FTP-аккаунт, а не основной: пароль основного аккаунта — это пароль
 # от панели управления хостингом. Секрет в GitHub не должен давать доступ к панели,
@@ -78,36 +80,54 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Собрать отчёт
+      - name: Собрать отчёты
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           set -euo pipefail
-          args=(
-            --inventory data/inventory.json
-            --warning-days 3
-            --out reports/expiry_report.md
-            --html-out reports/expiry_report.html
-            --json-out reports/expiry_report.json
-          )
           as_of="${{ github.event.inputs.as_of }}"
-          if [ -n "$as_of" ]; then args+=(--as-of "$as_of"); fi
+          as_of_args=()
+          if [ -n "$as_of" ]; then as_of_args+=(--as-of "$as_of"); fi
           # --suggest-menu без --strict-llm: если DeepSeek недоступен или ключа нет,
           # отчёт о сроках всё равно выпускается (проверено: rc=0 + предупреждение
           # в stderr). Со --strict-llm тот же случай даёт rc=2 и сорвал бы cron.
           want_ideas="${{ github.event.inputs.suggest_menu }}"
+          ideas_args=()
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "$want_ideas" != "false" ]; then
-            args+=(--suggest-menu)
+            ideas_args+=(--suggest-menu)
           fi
-          python -m agent.cli "${args[@]}"
+          # Дом: идеи блюд от DeepSeek с hard-filter аллергенов семьи
+          # (профиль data/family_profile.json — дефолт --profile).
+          python -m agent.cli \
+            --inventory data/inventory.json \
+            --warning-days 3 \
+            --title "Дом — отчёт о сроках годности" \
+            --out reports/dom/expiry_report.md \
+            --html-out reports/dom/expiry_report.html \
+            --json-out reports/dom/expiry_report.json \
+            "${as_of_args[@]}" "${ideas_args[@]}"
+          # Кафе.Ресторан: детерминированный отчёт по ручному инвентарю заведения.
+          # Идей блюд намеренно нет: hard-filter заточен под аллергены семьи, а
+          # предупреждение «не проверено на аллергены» на странице заведения
+          # смущало бы посетителей. POS-источник подключается позже отдельно.
+          python -m agent.cli \
+            --inventory data/cafe_inventory.json \
+            --warning-days 3 \
+            --title "Кафе.Ресторан — отчёт о сроках годности" \
+            --out reports/cafe/expiry_report.md \
+            --html-out reports/cafe/expiry_report.html \
+            --json-out reports/cafe/expiry_report.json \
+            "${as_of_args[@]}"
 
-      - name: Проверить, что отчёт собран
+      - name: Проверить, что отчёты собраны
         run: |
           set -euo pipefail
-          for f in reports/expiry_report.html reports/expiry_report.md reports/expiry_report.json; do
+          for f in site/index.html \
+                   reports/dom/expiry_report.html reports/dom/expiry_report.md reports/dom/expiry_report.json \
+                   reports/cafe/expiry_report.html reports/cafe/expiry_report.md reports/cafe/expiry_report.json; do
             test -s "$f" || { echo "::error::файл $f пуст или отсутствует"; exit 1; }
           done
-          ls -l reports/
+          ls -l reports/dom reports/cafe
 
       - name: Выгрузить на хостинг по FTP
         env:
@@ -130,16 +150,30 @@ jobs:
           dir="${{ vars.FTP_DIR }}"
           dir="${dir#/}"; dir="${dir%/}"
           if [ -n "$dir" ]; then base="ftp://${FTP_HOST}/${dir}"; else base="ftp://${FTP_HOST}"; fi
-          # HTML публикуется как index.html: адрес каталога открывает отчёт сразу.
-          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
-               --user "${FTP_USER}:${FTP_PASSWORD}" \
-               -T reports/expiry_report.html "${base}/index.html"
-          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
-               --user "${FTP_USER}:${FTP_PASSWORD}" \
-               -T reports/expiry_report.md "${base}/expiry_report.md"
-          curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
-               --user "${FTP_USER}:${FTP_PASSWORD}" \
-               -T reports/expiry_report.json "${base}/expiry_report.json"
+          # index.html — стартовая страница с выбором режима; отчёты — в подкаталогах.
+          # --ftp-create-dirs создаёт dom/ и cafe/ на сервере сам.
+          for pair in "index.html:site/index.html" \
+                      "dom/index.html:reports/dom/expiry_report.html" \
+                      "dom/expiry_report.md:reports/dom/expiry_report.md" \
+                      "dom/expiry_report.json:reports/dom/expiry_report.json" \
+                      "cafe/index.html:reports/cafe/expiry_report.html" \
+                      "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
+                      "cafe/expiry_report.json:reports/cafe/expiry_report.json"; do
+            remote="${pair%%:*}"; local="${pair#*:}"
+            curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
+                 --user "${FTP_USER}:${FTP_PASSWORD}" \
+                 -T "$local" "${base}/${remote}"
+          done
+          # Раньше домашний отчёт публиковался в корне как expiry_report.{md,json} —
+          # убираем устаревшие копии, чтобы не дублировали dom/. Best-effort:
+          # отсутствие файла или отказ сервера не роняют публикацию.
+          if [ -z "$dir" ]; then
+            for stale in expiry_report.md expiry_report.json; do
+              curl -sS --ssl-reqd --insecure --user "${FTP_USER}:${FTP_PASSWORD}" \
+                   -Q "DELE ${stale}" "ftp://${FTP_HOST}/" \
+                || echo "не удалось удалить ${stale} (возможно, уже отсутствует)"
+            done
+          fi
           echo "Выгружено в ${base}/"
 
       - name: Проверить публикацию по HTTP
@@ -151,9 +185,13 @@ jobs:
         run: |
           set -euo pipefail
           base="${PUBLIC_URL%/}"
-          for pair in "index.html:reports/expiry_report.html" \
-                      "expiry_report.md:reports/expiry_report.md" \
-                      "expiry_report.json:reports/expiry_report.json"; do
+          for pair in "index.html:site/index.html" \
+                      "dom/index.html:reports/dom/expiry_report.html" \
+                      "dom/expiry_report.md:reports/dom/expiry_report.md" \
+                      "dom/expiry_report.json:reports/dom/expiry_report.json" \
+                      "cafe/index.html:reports/cafe/expiry_report.html" \
+                      "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
+                      "cafe/expiry_report.json:reports/cafe/expiry_report.json"; do
             remote="${pair%%:*}"; local="${pair#*:}"
             code=$(curl -sS -o "$RUNNER_TEMP/dl" -w '%{http_code}' --retry 3 --retry-delay 5 "$base/$remote")
             [ "$code" = "200" ] || { echo "::error::$base/$remote вернул HTTP $code"; exit 1; }

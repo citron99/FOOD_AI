@@ -83,6 +83,44 @@ class CliAgentTests(unittest.TestCase):
             self.assertIn("</html>", html)
             self.assertNotIn("<script", html)
 
+    def test_render_html_default_title_and_home_link(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text('{"products": []}', encoding="utf-8")
+            result = analyze(load_products(path), date(2026, 8, 18), 3)
+            html = render_html(result)
+            self.assertIn("<title>SmartKitchen Family — отчёт о продуктах</title>", html)
+            self.assertIn("<h1>SmartKitchen Family — отчёт о срочных продуктах</h1>", html)
+            # Отчёты на сайте открываются со стартовой страницы — обратная ссылка обязана быть.
+            self.assertIn('<a href="/">← На главную</a>', html)
+
+    def test_render_html_custom_title_is_escaped(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text('{"products": []}', encoding="utf-8")
+            result = analyze(load_products(path), date(2026, 8, 18), 3)
+            html = render_html(result, title="Кафе.Ресторан <b>— отчёт</b>")
+            self.assertIn("<title>Кафе.Ресторан &lt;b&gt;— отчёт&lt;/b&gt;</title>", html)
+            self.assertIn("<h1>Кафе.Ресторан &lt;b&gt;— отчёт&lt;/b&gt;</h1>", html)
+            self.assertNotIn("<h1>SmartKitchen Family", html)
+
+    def test_cli_title_flag_reaches_html(self):
+        with TemporaryDirectory() as directory:
+            inventory = Path(directory) / "inventory.json"
+            inventory.write_text('{"products": []}', encoding="utf-8")
+            html_path = Path(directory) / "report.html"
+            argv = [
+                "cli", "--inventory", str(inventory),
+                "--out", str(Path(directory) / "report.md"),
+                "--html-out", str(html_path),
+                "--title", "Кафе.Ресторан — отчёт о сроках годности",
+            ]
+            with mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(), 0)
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("<h1>Кафе.Ресторан — отчёт о сроках годности</h1>", html)
+
 
 class InputValidationTests(unittest.TestCase):
     """Волна 3 (ревью, «валидация входных данных»).
