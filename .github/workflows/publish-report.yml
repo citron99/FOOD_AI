@@ -165,15 +165,16 @@ jobs:
                  -T "$local" "${base}/${remote}"
           done
           # Раньше домашний отчёт публиковался в корне как expiry_report.{md,json} —
-          # убираем устаревшие копии, чтобы не дублировали dom/. Best-effort:
-          # отсутствие файла или отказ сервера не роняют публикацию.
-          if [ -z "$dir" ]; then
-            for stale in expiry_report.md expiry_report.json; do
-              curl -sS --ssl-reqd --insecure --user "${FTP_USER}:${FTP_PASSWORD}" \
-                   -Q "DELE ${stale}" "ftp://${FTP_HOST}/" \
-                || echo "не удалось удалить ${stale} (возможно, уже отсутствует)"
-            done
-          fi
+          # убираем устаревшие копии, чтобы не дублировали dom/. Работает при любом
+          # FTP_DIR: для аккаунта, ограниченного каталогом сайта, путь к файлу относителен
+          # корня сессии; для аккаунта, видящего всю домашнюю папку, — с префиксом dir.
+          # Best-effort: отсутствие файла или отказ сервера не роняют публикацию.
+          for stale in expiry_report.md expiry_report.json; do
+            if [ -n "$dir" ]; then path="${dir}/${stale}"; else path="${stale}"; fi
+            curl -sS --ssl-reqd --insecure --user "${FTP_USER}:${FTP_PASSWORD}" \
+                 -Q "DELE ${path}" "ftp://${FTP_HOST}/" \
+              || echo "не удалось удалить ${stale} (возможно, уже отсутствует)"
+          done
           echo "Выгружено в ${base}/"
 
       - name: Проверить публикацию по HTTP
