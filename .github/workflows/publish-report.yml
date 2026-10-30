@@ -152,6 +152,9 @@ jobs:
           if [ -n "$dir" ]; then base="ftp://${FTP_HOST}/${dir}"; else base="ftp://${FTP_HOST}"; fi
           # index.html — стартовая страница с выбором режима; отчёты — в подкаталогах.
           # --ftp-create-dirs создаёт dom/ и cafe/ на сервере сам.
+          # --binary гарантирует передачу в бинарном режиме без конвертации окончаний
+          # строк (LF ↔ CRLF), иначе FTP-сервер может изменить содержимое файла,
+          # и контрольная сумма не совпадёт при проверке.
           for pair in "index.html:site/index.html" \
                       "dom/index.html:reports/dom/expiry_report.html" \
                       "dom/expiry_report.md:reports/dom/expiry_report.md" \
@@ -160,7 +163,8 @@ jobs:
                       "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
                       "cafe/expiry_report.json:reports/cafe/expiry_report.json"; do
             remote="${pair%%:*}"; local="${pair#*:}"
-            curl -sS --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
+            echo "Загрузка: $local → $remote ($(wc -c < "$local") байт)"
+            curl -sS --binary --ssl-reqd --insecure --ftp-create-dirs --retry 3 --retry-delay 5 \
                  --user "${FTP_USER}:${FTP_PASSWORD}" \
                  -T "$local" "${base}/${remote}"
           done
@@ -194,11 +198,16 @@ jobs:
                       "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
                       "cafe/expiry_report.json:reports/cafe/expiry_report.json"; do
             remote="${pair%%:*}"; local="${pair#*:}"
-            code=$(curl -sS -o "$RUNNER_TEMP/dl" -w '%{http_code}' --retry 3 --retry-delay 5 "$base/$remote")
+            # -H "Cache-Control: no-cache" запрещает кеш на стороне сервера/CDN,
+            # чтобы получить свежую копию только что загруженного файла.
+            code=$(curl -sS -o "$RUNNER_TEMP/dl" -w '%{http_code}' -H "Cache-Control: no-cache" --retry 3 --retry-delay 5 "$base/$remote")
             [ "$code" = "200" ] || { echo "::error::$base/$remote вернул HTTP $code"; exit 1; }
             remote_sum=$(sha256sum < "$RUNNER_TEMP/dl" | cut -d' ' -f1)
             local_sum=$(sha256sum < "$local" | cut -d' ' -f1)
+            remote_size=$(wc -c < "$RUNNER_TEMP/dl")
+            local_size=$(wc -c < "$local")
+            echo "Проверка $remote: локальный sha256=$local_sum ($local_size байт), удалённый sha256=$remote_sum ($remote_size байт)"
             [ "$remote_sum" = "$local_sum" ] || {
-              echo "::error::$remote не совпадает с $local (sha256 $remote_sum ≠ $local_sum)"; exit 1; }
+              echo "::error::$remote не совпадает с $local (sha256 $remote_sum ≠ $local_sum, размеры: локальный $local_size, удалённый $remote_size)"; exit 1; }
             echo "OK $base/$remote HTTP 200, sha256 совпадает"
           done
