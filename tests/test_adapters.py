@@ -2,7 +2,7 @@ import base64
 import json
 import os
 import unittest
-from typing import Any
+from typing import TypedDict
 
 from agent.adapters import frontpad, iiko, quickresto, registry, saby, yuma
 from agent.adapters.base import (
@@ -15,12 +15,20 @@ from agent.adapters.base import (
 )
 
 
+class CapturedRequest(TypedDict, total=False):
+    """Что транспорт-шпион отправил наружу; заполняется при вызове."""
+
+    url: str
+    body: bytes | None
+    headers: dict[str, str]
+
+
 def fake_json(payload: object) -> Transport:
     raw = json.dumps(payload).encode("utf-8")
     return lambda url, body, headers, timeout: raw
 
 
-def spy_transport(captured: dict[str, Any]) -> Transport:
+def spy_transport(captured: CapturedRequest) -> Transport:
     def transport(url: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
         captured["url"], captured["body"], captured["headers"] = url, body, headers
         return b"[]"
@@ -123,7 +131,7 @@ class QuickRestoAdapterTests(unittest.TestCase):
 
     def test_basic_auth_header_comes_from_config(self) -> None:
         # Волна 5 (п.14): Basic собирает RestConfig.auth_headers(), а не адаптер.
-        captured: dict[str, Any] = {}
+        captured: CapturedRequest = {}
         quickresto.import_products(QR_CONFIG, spy_transport(captured))
         self.assertEqual(
             captured["headers"].get("Authorization"),
@@ -146,14 +154,16 @@ class FrontPadAdapterTests(unittest.TestCase):
     def test_secret_sent_only_in_authorization_header(self) -> None:
         # Волна 5 (п.14): секрет ровно в одном канале — заголовке Bearer;
         # в теле формы он больше не дублируется.
-        captured: dict[str, Any] = {}
+        captured: CapturedRequest = {}
         frontpad.import_products(
             RestConfig(base_url="https://demo.frontpad.ru", endpoint="/api/",
                        token="SUPERSECRET123"),
             spy_transport(captured),
         )
-        self.assertNotIn(b"secret=", captured["body"])
-        self.assertIn(b"cmd=getProducts", captured["body"])
+        body = captured["body"]
+        assert body is not None
+        self.assertNotIn(b"secret=", body)
+        self.assertIn(b"cmd=getProducts", body)
         self.assertEqual(captured["headers"].get("Authorization"),
                          "Bearer SUPERSECRET123")
 

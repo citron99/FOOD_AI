@@ -1,11 +1,12 @@
 import json
 import os
 import unittest
-from typing import Any
+from typing import cast
 from unittest import mock
 
 from agent.adapters import deepseek
 from agent.adapters.base import AdapterError, AdapterResponseError, Transport
+from agent.adapters.deepseek import ChatRequest
 from agent.models import Product
 
 
@@ -21,7 +22,7 @@ class RecordingTransport:
     def __init__(self, payload: object) -> None:
         self.payload = payload
         self.url: str | None = None
-        self.request: dict[str, Any] = {}
+        self.request: ChatRequest = cast(ChatRequest, {})
         self.timeout: float | None = None
 
     def __call__(self, url: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
@@ -122,11 +123,13 @@ class DeepSeekEnvConfigTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def chat(self, transport: RecordingTransport | None = None,
-             **kwargs: Any) -> RecordingTransport:
+    def chat(self, transport: RecordingTransport | None = None, *,
+             base_url: str | None = None, model: str | None = None,
+             timeout: float | None = None) -> RecordingTransport:
         recorded = transport if transport is not None else RecordingTransport(CHAT_OK)
-        deepseek.chat([{"role": "user", "content": "hi"}],
-                      config=deepseek.DeepSeekConfig(api_key="k", transport=recorded, **kwargs))
+        config = deepseek.DeepSeekConfig(api_key="k", transport=recorded,
+                                         base_url=base_url, model=model, timeout=timeout)
+        deepseek.chat([{"role": "user", "content": "hi"}], config=config)
         return recorded
 
     def test_defaults_without_env(self) -> None:

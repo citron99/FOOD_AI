@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 # Реестр источников импортируется на уровне модуля: волна 5 (ревью, п.13)
 # перенесла Product/parse_date в agent/models.py, поэтому цикла импортов
@@ -21,6 +21,28 @@ from typing import Any
 # models ← adapters ← cli.
 from agent.adapters.registry import available_sources, load_source
 from agent.models import Product, parse_date
+
+
+class ReportItem(TypedDict):
+    """Позиция инвентаря в JSON-отчёте (контракт ``--json-out``)."""
+
+    name: str
+    quantity: float
+    unit: str
+    location: str
+    expires_at: str | None
+    days_left: int | None
+    status: str
+
+
+class Report(TypedDict):
+    """Результат анализа: вход для рендеров и контракт ``--json-out``."""
+
+    generated_at: str
+    as_of: str
+    warning_days: int
+    summary: dict[str, int]
+    groups: dict[str, list[ReportItem]]
 
 
 class InventoryError(ValueError):
@@ -81,16 +103,17 @@ class AllergenProfileError(ValueError):
         )
 
 
-def _read_inventory(path: Path) -> Any:
+def _read_inventory(path: Path) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload: object = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise InventoryError.file_not_found(path) from None
     except json.JSONDecodeError as exc:
         raise InventoryError.invalid_json(path, exc) from None
+    return payload
 
 
-def _inventory_items(payload: Any, path: Path) -> list[Any]:
+def _inventory_items(payload: object, path: Path) -> list[object]:
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
@@ -101,7 +124,7 @@ def _inventory_items(payload: Any, path: Path) -> list[Any]:
     return raw_items
 
 
-def _build_product(item: Any) -> Product:
+def _build_product(item: object) -> Product:
     if not isinstance(item, dict):
         # Волна 3: валидация входа даёт ValueError, а не TypeError.
         raise InventoryError.item_not_object(item)
@@ -164,8 +187,14 @@ def classify(product: Product, today: date, warning_days: int) -> str:
     return "normal"
 
 
-def analyze(products: list[Product], today: date, warning_days: int) -> dict[str, Any]:
-    groups: dict[str, list[dict[str, Any]]] = {"expired": [], "urgent": [], "normal": [], "no_date": [], "ignored": []}
+def _days_left_key(item: ReportItem) -> int:
+    """Ключ сортировки: у expired/urgent срок всегда есть, None — запасной путь."""
+    days = item["days_left"]
+    return 0 if days is None else days
+
+
+def analyze(products: list[Product], today: date, warning_days: int) -> Report:
+    groups: dict[str, list[ReportItem]] = {"expired": [], "urgent": [], "normal": [], "no_date": [], "ignored": []}
     for product in products:
         bucket = classify(product, today, warning_days)
         if bucket == "ignore":
@@ -180,8 +209,8 @@ def analyze(products: list[Product], today: date, warning_days: int) -> dict[str
             "days_left": days_left,
             "status": product.status,
         })
-    groups["expired"].sort(key=lambda x: x["days_left"])
-    groups["urgent"].sort(key=lambda x: x["days_left"])
+    groups["expired"].sort(key=_days_left_key)
+    groups["urgent"].sort(key=_days_left_key)
     return {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "as_of": today.isoformat(),
@@ -191,14 +220,14 @@ def analyze(products: list[Product], today: date, warning_days: int) -> dict[str
     }
 
 
-def _md_cell(value: Any) -> str:
+def _md_cell(value: object) -> str:
     """Экранирование значения ячейки Markdown-таблицы (п. «валидация входных
     данных» ревью): сырое «|» в названии добавляло колонку и ломало строку."""
     return (str(value).replace("\\", "\\\\").replace("|", "\\|")
             .replace("\r", " ").replace("\n", " "))
 
 
-def render_markdown(result: dict[str, Any]) -> str:
+def render_markdown(result: Report) -> str:
     s = result["summary"]
     lines = [
         "# SmartKitchen Family — отчёт о срочных продуктах",
@@ -272,7 +301,7 @@ footer{margin-top:3rem;font-size:.85rem;color:#888;border-top:1px solid #e0e0e0;
 """
 
 
-def _esc(value: Any) -> str:
+def _esc(value: object) -> str:
     """Экранирование HTML-символов для безопасной вставки текста."""
     return (str(value).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
@@ -302,7 +331,7 @@ def _ideas_to_html(ideas: str) -> str:
     return "\n".join(out)
 
 
-def render_html(result: dict[str, Any],
+def render_html(result: Report,
                 menu_ideas: tuple[list[str], str] | None = None,
                 *, title: str | None = None) -> str:
     """Автономная HTML-страница отчёта без внешних зависимостей.
@@ -519,7 +548,7 @@ def _load_products_for_run(parser: argparse.ArgumentParser, args: argparse.Names
 class _MenuContext:
     parser: argparse.ArgumentParser
     args: argparse.Namespace
-    result: dict[str, Any]
+    result: Report
     products: list[Product]
     allergens: set[str]
     allergen_warnings: list[str]
@@ -580,7 +609,7 @@ def _append_ideas(markdown: str, menu_ideas: tuple[list[str], str]) -> str:
 def _write_reports(
     args: argparse.Namespace,
     markdown: str,
-    result: dict[str, Any],
+    result: Report,
     menu_ideas: tuple[list[str], str] | None,
 ) -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)

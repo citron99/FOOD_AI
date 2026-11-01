@@ -7,11 +7,11 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest import mock
 
 from agent.adapters.base import AdapterError
 from agent.cli import (
+    Report,
     analyze,
     load_family_allergens,
     load_products,
@@ -237,7 +237,7 @@ class ManualAccountingSectionTests(unittest.TestCase):
     без объяснений — ignored-позиции (quantity=0) перечисляются в секции
     «Требуется ручной учёт» с пояснением, что делать пользователю."""
 
-    def _pos_result(self) -> dict[str, Any]:
+    def _pos_result(self) -> Report:
         # Как из POS-адаптеров: справочник без остатков и сроков.
         products = [
             Product(name="Куриное филе", quantity=0, unit="кг",
@@ -339,7 +339,7 @@ class SuggestMenuReportTests(unittest.TestCase):
         profile_payload: object | None,
         extra_args: Sequence[str] = (),
         html: bool = False,
-    ) -> tuple[int, Path, dict[str, Any], str, Path]:
+    ) -> tuple[int, Path, dict[str, object], str, Path]:
         inventory = Path(directory) / "inventory.json"
         inventory.write_text(json.dumps({"products": [
             {"name": "Куриное филе", "quantity": 1, "unit": "кг",
@@ -359,7 +359,7 @@ class SuggestMenuReportTests(unittest.TestCase):
         ]
         if html:
             argv += ["--html-out", str(html_path)]
-        calls: dict[str, Any] = {}
+        calls: dict[str, object] = {}
 
         def fake_suggest(products: object, **kwargs: object) -> str:
             calls.update(kwargs)

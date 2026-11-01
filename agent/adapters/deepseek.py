@@ -26,6 +26,7 @@ import json
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TypedDict, cast
 
 from agent.adapters.base import (
     AdapterError,
@@ -42,6 +43,40 @@ SYSTEM = "deepseek"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 30.0
+
+
+class ChatMessage(TypedDict):
+    """Элемент диалога в формате DeepSeek /chat/completions."""
+
+    role: str
+    content: str
+
+
+class ChatRequest(TypedDict):
+    """Тело запроса к DeepSeek; поля фиксированы API провайдера."""
+
+    model: str
+    messages: list[ChatMessage]
+    max_tokens: int
+    temperature: float
+
+
+class ChatChoiceMessage(TypedDict, total=False):
+    """Сообщение внутри choice; провайдер может добавить служебные поля."""
+
+    role: str
+    content: str
+
+
+class ChatChoice(TypedDict, total=False):
+    message: ChatChoiceMessage
+
+
+class ChatResponse(TypedDict, total=False):
+    """Ответ DeepSeek: обязателен только непустой ``choices``."""
+
+    choices: list[ChatChoice]
+    usage: dict[str, int]
 
 
 class DeepSeekConfigError(AdapterError):
@@ -110,27 +145,36 @@ class DeepSeekConfig:
         return key, base_url, model, timeout, self.transport
 
 
-def chat(messages: list[dict[str, str]], *, config: DeepSeekConfig | None = None,
+def _response_content(payload: object) -> str:
+    """Достаёт текст первого choice; пустой ответ — ``DeepSeekResponseError``."""
+    raw_choices = payload.get("choices") if isinstance(payload, dict) else None
+    if not raw_choices:
+        raise DeepSeekResponseError.missing_choices(payload)
+    # Непустой choices проверен выше; остальные поля — известный контракт API.
+    choice = cast(ChatResponse, payload)["choices"][0]
+    message = choice.get("message")
+    content = message.get("content") if message is not None else None
+    if not content:
+        raise DeepSeekResponseError.empty_content(payload)
+    return str(content)
+
+
+def chat(messages: list[ChatMessage], *, config: DeepSeekConfig | None = None,
          max_tokens: int = 800, temperature: float = 0.3) -> str:
     """Отправляет диалог в /chat/completions и возвращает текст ответа."""
     key, base_url, model, timeout, transport = (config or DeepSeekConfig()).resolve()
     cfg = RestConfig(base_url=base_url, endpoint="/chat/completions", token=key,
                      timeout=timeout)
-    body = json.dumps({
+    request: ChatRequest = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-    }).encode("utf-8")
+    }
+    body = json.dumps(request).encode("utf-8")
     payload = fetch_json(cfg, transport, body=body,
                          headers={"Content-Type": "application/json"})
-    choices = payload.get("choices") if isinstance(payload, dict) else None
-    if not choices:
-        raise DeepSeekResponseError.missing_choices(payload)
-    content = choices[0].get("message", {}).get("content")
-    if not content:
-        raise DeepSeekResponseError.empty_content(payload)
-    return str(content)
+    return _response_content(payload)
 
 
 def suggest_menu_ideas(products: list[Product], *, config: DeepSeekConfig | None = None,
