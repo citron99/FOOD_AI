@@ -112,6 +112,21 @@ class CliAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Не удалось прочитать"):
                 load_products(path)
 
+    def test_unwritable_output_is_reported_clearly(self) -> None:
+        """--out каталогом или read-only томом давал трассировку OSError."""
+        with TemporaryDirectory() as directory:
+            inventory = Path(directory) / "inventory.json"
+            inventory.write_text('{"products": []}', encoding="utf-8")
+            argv = ["cli", "--inventory", str(inventory), "--out", directory]
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as caught:
+                main()
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("Не удалось записать отчёт", err.getvalue())
+
     def test_render_html_produces_standalone_page(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
@@ -228,6 +243,27 @@ class InputValidationTests(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 load_products(path)
             self.assertIn("'null'", err.getvalue())
+
+    def test_non_finite_quantity_is_rejected(self) -> None:
+        """float() принимает «nan»/«inf», и в отчёте появлялся остаток nan."""
+        for raw in ("nan", "inf", "-inf"):
+            with TemporaryDirectory() as directory:
+                path = self._inventory(directory, [
+                    {"name": "Кефир", "quantity": raw}
+                ])
+                with self.subTest(raw=raw), \
+                        self.assertRaisesRegex(ValueError, "конечным числом"):
+                    load_products(path)
+
+    def test_container_unit_and_location_use_defaults(self) -> None:
+        """Объект в необязательном текстовом поле печатался как repr словаря."""
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": "Кефир", "quantity": 1, "unit": ["л"],
+                 "location": {"полка": 2}}
+            ])
+            product = load_products(path)[0]
+            self.assertEqual((product.unit, product.location), ("шт.", "не указано"))
 
     def test_missing_and_known_status_do_not_warn(self) -> None:
         with TemporaryDirectory() as directory:

@@ -26,6 +26,14 @@ jobs:
       - name: Mypy
         run: mypy agent tests
 
+      # Пакет ставится не только для запуска из каталога: pyproject перечисляет
+      # packages явно, и забытый подпакет обваливал импорт agent.cli в wheel.
+      - name: Install package
+        run: pip install --no-deps .
+
+      - name: Installed package imports
+        run: cd "$RUNNER_TEMP" && python -c "import agent.adapters.registry, agent.allergens, agent.cli"
+
   unittest:
     needs: lint
     runs-on: ubuntu-latest

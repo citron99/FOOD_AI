@@ -26,3 +26,7 @@ Thumbs.db
 .wb/
 webbridge-req-*.json
 Usersa0803DownloadsAI_FOOD.wbscreenshot_out.json
+
+# Артефакты сборки пакета (pip install .)
+build/
+dist/

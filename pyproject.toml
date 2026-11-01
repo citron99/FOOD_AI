@@ -10,7 +10,9 @@ requires-python = ">=3.11"
 dependencies = []
 
 [tool.setuptools]
-packages = ["agent"]
+# Подпакеты перечисляются явно: packages = ["agent"] ставил только корневые
+# модули, и импорт agent.cli из установленного пакета падал на agent.adapters.
+packages = ["agent", "agent.adapters"]
 
 [tool.mypy]
 python_version = "3.11"
