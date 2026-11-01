@@ -9,8 +9,9 @@ CLI-модуля, а ``cli.py`` вынужден был лениво импор�
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 
@@ -33,6 +34,9 @@ class Product:
     status: str = "active"
 
 
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def parse_date(value: Any, name: str) -> date | None:
     """Парсит дату ГГГГ-ММ-ДД; None/пустая строка означают «даты нет».
 
@@ -47,7 +51,11 @@ def parse_date(value: Any, name: str) -> date | None:
         # Волна 3: единый ValueError с именем продукта для любого неверного
         # формата даты (тесты и README зафиксировали ValueError, не TypeError).
         raise InvalidDateError(name, value)
+    # Контракт поля — только календарная дата ГГГГ-ММ-ДД, а date.fromisoformat
+    # с Python 3.11 принимает ещё компактную (20260820) и недельную запись.
+    if not _DATE_PATTERN.fullmatch(value):
+        raise InvalidDateError(name, value)
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()  # сроки годности хранятся как наивные локальные даты
+        return date.fromisoformat(value)
     except ValueError:
         raise InvalidDateError(name, value) from None

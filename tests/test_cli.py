@@ -61,6 +61,18 @@ class CliAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Неверный формат даты"):
                 load_products(path)
 
+    def test_iso_short_forms_are_rejected(self):
+        """date.fromisoformat принимает ещё 20260820 и недельную запись,
+        а контракт поля — только календарная дата ГГГГ-ММ-ДД."""
+        for raw in ("20260820", "2026-W34-4"):
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "inventory.json"
+                path.write_text(json.dumps({"products": [
+                    {"name": "Молоко", "quantity": 1, "expires_at": raw}
+                ]}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Неверный формат даты"):
+                    load_products(path)
+
     def test_missing_required_field_is_reported_clearly(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
