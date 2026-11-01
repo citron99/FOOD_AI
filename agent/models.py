@@ -41,7 +41,7 @@ def parse_date(value: Any, name: str) -> date | None:
             f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
         )
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007 — сроки годности хранятся как наивные локальные даты
+        return datetime.strptime(value, "%Y-%m-%d").date()  # сроки годности хранятся как наивные локальные даты
     except ValueError:
         raise ValueError(
             f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"

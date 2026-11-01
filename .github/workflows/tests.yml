@@ -18,7 +18,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install lint tools
-        run: pip install ruff mypy
+        run: pip install ruff==0.17.3 mypy==2.4.1
 
       - name: Ruff check
         run: ruff check agent tests
