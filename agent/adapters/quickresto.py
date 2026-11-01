@@ -16,7 +16,7 @@ QuickResto (HTTP Basic-авторизация, GET /api/products). Точные 
 """
 from __future__ import annotations
 
-from agent.adapters.base import make_rest_source
+from agent.adapters.base import RestSourceSpec, make_rest_source
 
 SYSTEM = "quickresto"
 
@@ -24,12 +24,12 @@ SYSTEM = "quickresto"
 NAME_FIELD = "name"
 UNIT_FIELD = "unit"
 
-import_products = make_rest_source(
-    "QuickResto",
+import_products = make_rest_source(RestSourceSpec(
+    system="QuickResto",
     base_url_env="QR_BASE_URL",
     username_env="QR_USER",
     password_env="QR_PASSWORD",
     endpoint="/api/products",
     auth_kind="basic",
     location="QuickResto (справочник)",
-)
+))

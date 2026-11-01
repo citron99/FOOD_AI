@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -22,58 +23,125 @@ from agent.adapters.registry import available_sources, load_source
 from agent.models import Product, parse_date
 
 
-def load_products(path: Path) -> list[Product]:
+class InventoryError(ValueError):
+    """Ошибка чтения и валидации файла инвентаря."""
+
+    @classmethod
+    def file_not_found(cls, path: Path) -> InventoryError:
+        return cls(f"Файл инвентаря не найден: {path}")
+
+    @classmethod
+    def invalid_json(cls, path: Path, exc: json.JSONDecodeError) -> InventoryError:
+        return cls(f"Файл инвентаря не является корректным JSON: {path} ({exc})")
+
+    @classmethod
+    def bad_structure(cls, path: Path) -> InventoryError:
+        return cls(
+            f"Неверная структура инвентаря в {path}: "
+            "ожидается объект с полем «products» или список"
+        )
+
+    @classmethod
+    def products_not_list(cls, path: Path) -> InventoryError:
+        return cls(f"Поле «products» в {path} должно быть списком")
+
+    @classmethod
+    def item_not_object(cls, item: object) -> InventoryError:
+        return cls(f"Каждая позиция инвентаря должна быть объектом: {item!r}")
+
+    @classmethod
+    def missing_name(cls) -> InventoryError:
+        return cls("В позиции инвентаря отсутствует обязательное поле «name»")
+
+    @classmethod
+    def missing_quantity(cls, name: str) -> InventoryError:
+        return cls(f"В позиции инвентаря отсутствует обязательное поле «quantity»: {name}")
+
+    @classmethod
+    def non_numeric_quantity(cls, name: str, value: object) -> InventoryError:
+        return cls(f"Нечисловой остаток у продукта «{name}»: {value!r}")
+
+    @classmethod
+    def negative_quantity(cls, name: str) -> InventoryError:
+        return cls(f"Отрицательный остаток запрещён: {name}")
+
+
+class AllergenProfileError(ValueError):
+    """Профиль семьи отсутствует, а публиковать подсказки без фильтра нельзя."""
+
+    @classmethod
+    def missing_profile(cls, profile: Path) -> AllergenProfileError:
+        return cls(
+            f"Профиль семьи с аллергенами не найден: {profile}. "
+            "Без него hard-filter аллергенов отключается, а публиковать "
+            "LLM-подсказки о еде без фильтра небезопасно. Создайте файл "
+            'вида {"family_id": "demo", "allergens": ["орехи", "мёд"]} '
+            "или добавьте --allow-no-profile, чтобы осознанно принять риск "
+            "(в отчёте появится явное предупреждение)."
+        )
+
+
+def _read_inventory(path: Path) -> Any:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise ValueError(f"Файл инвентаря не найден: {path}") from None
+        raise InventoryError.file_not_found(path) from None
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Файл инвентаря не является корректным JSON: {path} ({exc})") from None
+        raise InventoryError.invalid_json(path, exc) from None
+
+
+def _inventory_items(payload: Any, path: Path) -> list[Any]:
     if isinstance(payload, list):
-        raw_items = payload
-    elif isinstance(payload, dict):
-        raw_items = payload.get("products", [])
-    else:
-        raise ValueError(f"Неверная структура инвентаря в {path}: ожидается объект с полем «products» или список")  # noqa: TRY004 — волна 3: валидация входа даёт ValueError, а не TypeError
+        return payload
+    if not isinstance(payload, dict):
+        raise InventoryError.bad_structure(path)
+    raw_items = payload.get("products", [])
     if not isinstance(raw_items, list):
-        raise ValueError(f"Поле «products» в {path} должно быть списком")  # noqa: TRY004
-    products: list[Product] = []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            raise ValueError(f"Каждая позиция инвентаря должна быть объектом: {item!r}")  # noqa: TRY004
-        if "name" not in item or item["name"] is None:
-            raise ValueError("В позиции инвентаря отсутствует обязательное поле «name»")
-        name = str(item["name"])
-        if "quantity" not in item:
-            raise ValueError(f"В позиции инвентаря отсутствует обязательное поле «quantity»: {name}")
-        try:
-            quantity = float(item["quantity"])
-        except (TypeError, ValueError):
-            raise ValueError(f"Нечисловой остаток у продукта «{name}»: {item['quantity']!r}") from None
-        if quantity < 0:
-            raise ValueError(f"Отрицательный остаток запрещён: {name}")
-        # Волна 3 (ревью, «валидация входных данных»): опечатка («actve») или
-        # null в статусе раньше молча уводили позицию в «Вне активного учёта»,
-        # и просрочка исчезала из отчёта без единого слова. Позиция остаётся
-        # исключённой (за пользователя не гадаем), но предупреждаем в stderr.
-        raw_status = item.get("status", "active")
-        status = str(raw_status) if raw_status is not None else "null"
-        if status not in KNOWN_STATUSES:
-            print(
-                f"⚠️ Позиция «{name}» имеет неизвестный статус {status!r} "
-                "и исключена из активного учёта. Задайте «active» или «frozen», "
-                "если позиция должна попадать в отчёт.",
-                file=sys.stderr,
-            )
-        products.append(Product(
-            name=name,
-            quantity=quantity,
-            unit=str(item.get("unit", "шт.")),
-            location=str(item.get("location", "не указано")),
-            expires_at=parse_date(item.get("expires_at"), name),
-            status=status,
-        ))
-    return products
+        raise InventoryError.products_not_list(path)
+    return raw_items
+
+
+def _build_product(item: Any) -> Product:
+    if not isinstance(item, dict):
+        # Волна 3: валидация входа даёт ValueError, а не TypeError.
+        raise InventoryError.item_not_object(item)
+    if "name" not in item or item["name"] is None:
+        raise InventoryError.missing_name()
+    name = str(item["name"])
+    if "quantity" not in item:
+        raise InventoryError.missing_quantity(name)
+    try:
+        quantity = float(item["quantity"])
+    except (TypeError, ValueError):
+        raise InventoryError.non_numeric_quantity(name, item["quantity"]) from None
+    if quantity < 0:
+        raise InventoryError.negative_quantity(name)
+    # Волна 3 (ревью, «валидация входных данных»): опечатка («actve») или
+    # null в статусе раньше молча уводили позицию в «Вне активного учёта»,
+    # и просрочка исчезала из отчёта без единого слова. Позиция остаётся
+    # исключённой (за пользователя не гадаем), но предупреждаем в stderr.
+    raw_status = item.get("status", "active")
+    status = str(raw_status) if raw_status is not None else "null"
+    if status not in KNOWN_STATUSES:
+        print(
+            f"⚠️ Позиция «{name}» имеет неизвестный статус {status!r} "
+            "и исключена из активного учёта. Задайте «active» или «frozen», "
+            "если позиция должна попадать в отчёт.",
+            file=sys.stderr,
+        )
+    return Product(
+        name=name,
+        quantity=quantity,
+        unit=str(item.get("unit", "шт.")),
+        location=str(item.get("location", "не указано")),
+        expires_at=parse_date(item.get("expires_at"), name),
+        status=status,
+    )
+
+
+def load_products(path: Path) -> list[Product]:
+    raw_items = _inventory_items(_read_inventory(path), path)
+    return [_build_product(item) for item in raw_items]
 
 
 # Статусы, за которыми classify ведёт активный учёт (сроки, отчёт).
@@ -364,14 +432,7 @@ def load_family_allergens(profile: Path, *, allow_no_profile: bool = False) -> t
 
     if not profile.exists():
         if not allow_no_profile:
-            raise ValueError(
-                f"Профиль семьи с аллергенами не найден: {profile}. "
-                "Без него hard-filter аллергенов отключается, а публиковать "
-                "LLM-подсказки о еде без фильтра небезопасно. Создайте файл "
-                'вида {"family_id": "demo", "allergens": ["орехи", "мёд"]} '
-                "или добавьте --allow-no-profile, чтобы осознанно принять риск "
-                "(в отчёте появится явное предупреждение)."
-            )
+            raise AllergenProfileError.missing_profile(profile)
         return set(), [
             (
                 "⚠️ Hard-filter аллергенов ОТКЛЮЧЁН: профиль семьи не найден "
@@ -391,7 +452,7 @@ def load_family_allergens(profile: Path, *, allow_no_profile: bool = False) -> t
     return allergens, []
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SmartKitchen Family deterministic CLI agent")
     parser.add_argument("--inventory", type=Path, default=Path("data/inventory.json"),
                         help="JSON-файл инвентаря (источник «json»)")
@@ -417,9 +478,12 @@ def main() -> int:
     parser.add_argument("--title", default=None,
                         help="заголовок HTML-отчёта (<title> и <h1>); нужен, когда на "
                              "сайт публикуются отчёты разных режимов (Дом, Кафе.Ресторан)")
-    args = parser.parse_args()
-    if args.warning_days < 0:
-        parser.error("--warning-days должен быть неотрицательным")
+    return parser
+
+
+def _load_allergens_for_run(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> tuple[set[str], list[str]]:
     # Проверяем профиль ДО чтения инвентаря и тем более до запроса к LLM:
     # ошибка конфигурации безопасности не должна обнаруживаться после сети.
     allergens: set[str] = set()
@@ -434,68 +498,89 @@ def main() -> int:
             parser.error(str(exc))
         for warning in allergen_warnings:
             print(warning, file=sys.stderr)
+    return allergens, allergen_warnings
+
+
+def _load_products_for_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[Product]:
     if args.source == "json":
         try:
-            products = load_products(args.inventory)
+            return load_products(args.inventory)
         except ValueError as exc:
             parser.error(str(exc))
-    else:
-        try:
-            products = load_source(args.source)
-        except Exception as exc:  # noqa: BLE001 — любой сбой адаптера = понятная ошибка запуска
-            parser.error(f"Источник «{args.source}» недоступен: {exc}")
-    result = analyze(products, args.as_of, args.warning_days)
-    markdown = render_markdown(result)
-    # Секция идей в виде (notices, body): один источник для MD- и HTML-рендера,
-    # иначе HTML, который публикуется на хостинг по cron, теряет идеи (п.9 ревью).
-    menu_ideas: tuple[list[str], str] | None = None
-    if args.suggest_menu:
-        from agent.adapters.deepseek import suggest_menu_ideas
-        from agent.allergens import (
-            expand_allergens,
-            filter_suggestions,
-            matched_profile_allergens,
+    try:
+        return load_source(args.source)
+    except Exception as exc:  # noqa: BLE001 — любой сбой адаптера = понятная ошибка запуска
+        parser.error(f"Источник «{args.source}» недоступен: {exc}")
+
+
+@dataclass(frozen=True)
+class _MenuContext:
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+    result: dict[str, Any]
+    products: list[Product]
+    allergens: set[str]
+    allergen_warnings: list[str]
+
+
+def _menu_ideas(context: _MenuContext) -> tuple[list[str], str]:
+    from agent.adapters.deepseek import suggest_menu_ideas
+    from agent.allergens import (
+        expand_allergens,
+        filter_suggestions,
+        matched_profile_allergens,
+    )
+    urgent = context.result["groups"]["urgent"]
+    candidates = [p for p in context.products
+                  if p.name in {item["name"] for item in urgent}]
+    notices = [
+        (
+            "⚠️ Неподтверждённая LLM-подсказка: проверьте состав и аллергены "
+            "вручную перед приготовлением."
         )
-        urgent = result["groups"]["urgent"]
-        candidates = [p for p in products
-                      if p.name in {item["name"] for item in urgent}]
-        notices = [
-            (
-                "⚠️ Неподтверждённая LLM-подсказка: проверьте состав и аллергены "
-                "вручную перед приготовлением."
-            )
-        ]
-        notices += allergen_warnings
-        try:
-            ideas = suggest_menu_ideas(candidates, allergens=sorted(allergens))
-        except Exception as exc:  # noqa: BLE001 — п.6: любой сбой LLM не роняет отчёт
-            if args.strict_llm:
-                parser.error(f"DeepSeek недоступен: {exc}")
-            # П.6 ревью: детерминированный отчёт важнее LLM-подсказок. Публикуем
-            # отчёт о сроках, а сбой фиксируем в секции идей и в stderr (лог cron).
-            error = f"DeepSeek недоступен: {exc}"
-            print(f"⚠️ {error} Отчёт о сроках записан без идей блюд.", file=sys.stderr)
-            notices = [f"⚠️ {error}", "Идеи блюд не получены; отчёт о сроках полный."]
-            ideas = ""
-        else:
-            # Hard-filter аллергенов: блюда с аллергенами из профиля семьи
-            # не показываются вовне (cli_agent_design.md, раздел про аллергены).
-            # Фильтр работает по расширенному набору (профиль + синонимы из
-            # data/allergen_synonyms.json), а в отчёте называются слова профиля.
-            raw_ideas = ideas
-            ideas, dropped = filter_suggestions(ideas, expand_allergens(allergens))
-            if dropped:
-                reasons = matched_profile_allergens(raw_ideas, allergens)
-                suffix = f" ({', '.join(reasons)})" if reasons else ""
-                notices.append(f"Скрыто блюд с аллергенами профиля: **{dropped}**{suffix}.")
-            if not ideas.strip():
-                ideas = "Нет блюд без аллергенов профиля семьи."
-        markdown += (
-            "\n## Идеи блюд (DeepSeek)\n\n"
-            + "> " + "\n> ".join(notices) + "\n\n"
-            + ideas.strip() + "\n"
-        )
-        menu_ideas = (notices, ideas)
+    ]
+    notices += context.allergen_warnings
+    try:
+        ideas = suggest_menu_ideas(candidates, allergens=sorted(context.allergens))
+    except Exception as exc:  # noqa: BLE001 — п.6: любой сбой LLM не роняет отчёт
+        if context.args.strict_llm:
+            context.parser.error(f"DeepSeek недоступен: {exc}")
+        # П.6 ревью: детерминированный отчёт важнее LLM-подсказок. Публикуем
+        # отчёт о сроках, а сбой фиксируем в секции идей и в stderr (лог cron).
+        error = f"DeepSeek недоступен: {exc}"
+        print(f"⚠️ {error} Отчёт о сроках записан без идей блюд.", file=sys.stderr)
+        return [f"⚠️ {error}", "Идеи блюд не получены; отчёт о сроках полный."], ""
+    # Hard-filter аллергенов: блюда с аллергенами из профиля семьи
+    # не показываются вовне (cli_agent_design.md, раздел про аллергены).
+    # Фильтр работает по расширенному набору (профиль + синонимы из
+    # data/allergen_synonyms.json), а в отчёте называются слова профиля.
+    raw_ideas = ideas
+    ideas, dropped = filter_suggestions(ideas, expand_allergens(context.allergens))
+    if dropped:
+        reasons = matched_profile_allergens(raw_ideas, context.allergens)
+        suffix = f" ({', '.join(reasons)})" if reasons else ""
+        notices.append(f"Скрыто блюд с аллергенами профиля: **{dropped}**{suffix}.")
+    if not ideas.strip():
+        ideas = "Нет блюд без аллергенов профиля семьи."
+    return notices, ideas
+
+
+def _append_ideas(markdown: str, menu_ideas: tuple[list[str], str]) -> str:
+    notices, ideas = menu_ideas
+    return (
+        markdown
+        + "\n## Идеи блюд (DeepSeek)\n\n"
+        + "> " + "\n> ".join(notices) + "\n\n"
+        + ideas.strip() + "\n"
+    )
+
+
+def _write_reports(
+    args: argparse.Namespace,
+    markdown: str,
+    result: dict[str, Any],
+    menu_ideas: tuple[list[str], str] | None,
+) -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(markdown, encoding="utf-8")
     if args.html_out:
@@ -507,6 +592,32 @@ def main() -> int:
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.warning_days < 0:
+        parser.error("--warning-days должен быть неотрицательным")
+    allergens, allergen_warnings = _load_allergens_for_run(parser, args)
+    products = _load_products_for_run(parser, args)
+    result = analyze(products, args.as_of, args.warning_days)
+    markdown = render_markdown(result)
+    # Секция идей в виде (notices, body): один источник для MD- и HTML-рендера,
+    # иначе HTML, который публикуется на хостинг по cron, теряет идеи (п.9 ревью).
+    menu_ideas: tuple[list[str], str] | None = None
+    if args.suggest_menu:
+        context = _MenuContext(
+            parser=parser,
+            args=args,
+            result=result,
+            products=products,
+            allergens=allergens,
+            allergen_warnings=allergen_warnings,
+        )
+        menu_ideas = _menu_ideas(context)
+        markdown = _append_ideas(markdown, menu_ideas)
+    _write_reports(args, markdown, result, menu_ideas)
     print(json.dumps(result["summary"], ensure_ascii=False))
     return 0
 

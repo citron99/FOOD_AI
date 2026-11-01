@@ -44,8 +44,7 @@ class DeepSeekAdapterTests(unittest.TestCase):
     def test_chat_returns_content(self):
         reply = deepseek.chat(
             [{"role": "user", "content": "hi"}],
-            api_key="test-key",
-            transport=fake_response(CHAT_OK),
+            config=deepseek.DeepSeekConfig(api_key="test-key", transport=fake_response(CHAT_OK)),
         )
         self.assertEqual(reply, "1. Омлет с молоком")
 
@@ -59,7 +58,8 @@ class DeepSeekAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(AdapterResponseError, "choices"):
             deepseek.chat(
                 [{"role": "user", "content": "hi"}],
-                api_key="k", transport=fake_response({"object": "chat.completion"}),
+                config=deepseek.DeepSeekConfig(
+                    api_key="k", transport=fake_response({"object": "chat.completion"})),
             )
 
     def test_chat_with_empty_content_raises(self):
@@ -67,14 +67,16 @@ class DeepSeekAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(AdapterResponseError, "пустой текст"):
             deepseek.chat(
                 [{"role": "user", "content": "hi"}],
-                api_key="k", transport=fake_response(payload),
+                config=deepseek.DeepSeekConfig(api_key="k", transport=fake_response(payload)),
             )
 
     def test_suggest_menu_ideas_mentions_products(self):
         products = [Product(name="Куриное филе", quantity=1, unit="кг",
                             location="холодильник", expires_at=None)]
         reply = deepseek.suggest_menu_ideas(
-            products, api_key="k", transport=fake_response(CHAT_OK))
+            products,
+            config=deepseek.DeepSeekConfig(api_key="k", transport=fake_response(CHAT_OK)),
+        )
         self.assertIn("Омлет", reply)
 
     def test_suggest_menu_ideas_without_products(self):
@@ -86,8 +88,9 @@ class DeepSeekAdapterTests(unittest.TestCase):
         products = [Product(name="Куриное филе", quantity=1, unit="кг",
                             location="холодильник", expires_at=None)]
         deepseek.suggest_menu_ideas(
-            products, api_key="k", allergens=["арахис", " Глютен ", ""],
-            transport=transport,
+            products,
+            config=deepseek.DeepSeekConfig(api_key="k", transport=transport),
+            allergens=["арахис", " Глютен ", ""],
         )
         prompt = transport.prompt
         self.assertIn("СТРОГОЕ ОГРАНИЧЕНИЕ ПО ЗДОРОВЬЮ", prompt)
@@ -99,10 +102,11 @@ class DeepSeekAdapterTests(unittest.TestCase):
         transport = RecordingTransport(CHAT_OK)
         products = [Product(name="Рис", quantity=1, unit="кг",
                             location="шкаф", expires_at=None)]
-        deepseek.suggest_menu_ideas(products, api_key="k", transport=transport)
+        config = deepseek.DeepSeekConfig(api_key="k", transport=transport)
+        deepseek.suggest_menu_ideas(products, config=config)
         self.assertNotIn("ОГРАНИЧЕНИЕ", transport.prompt)
 
-        deepseek.suggest_menu_ideas(products, api_key="k", allergens=[], transport=transport)
+        deepseek.suggest_menu_ideas(products, config=config, allergens=[])
         self.assertNotIn("ОГРАНИЧЕНИЕ", transport.prompt)
 
 
@@ -119,7 +123,7 @@ class DeepSeekEnvConfigTests(unittest.TestCase):
     def chat(self, transport=None, **kwargs):
         transport = transport or RecordingTransport(CHAT_OK)
         deepseek.chat([{"role": "user", "content": "hi"}],
-                      api_key="k", transport=transport, **kwargs)
+                      config=deepseek.DeepSeekConfig(api_key="k", transport=transport, **kwargs))
         return transport
 
     def test_defaults_without_env(self):

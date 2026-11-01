@@ -35,13 +35,57 @@ Transport = Callable[[str, bytes | None, dict[str, str], float], bytes]
 class AdapterError(Exception):
     """Базовая ошибка адаптера с понятным сообщением для пользователя."""
 
+    @classmethod
+    def http_status(cls, url: str, code: int) -> AdapterError:
+        return cls(f"Внешняя система вернула HTTP {code} для {url}")
+
+    @classmethod
+    def connection(cls, url: str, reason: object) -> AdapterError:
+        return cls(f"Не удалось подключиться к внешней системе ({url}): {reason}")
+
 
 class AdapterAuthError(AdapterError):
     """Ошибка аутентификации или её конфигурации (токен/логин/пароль)."""
 
+    @classmethod
+    def rejected_credentials(cls, url: str, code: int) -> AdapterAuthError:
+        return cls(f"Внешняя система отклонила учётные данные ({url}, HTTP {code})")
+
+    @classmethod
+    def missing_env(cls, system: str, missing: list[str]) -> AdapterAuthError:
+        return cls(f"Не заданы переменные окружения для {system}: " + ", ".join(missing))
+
 
 class AdapterResponseError(AdapterError):
     """Некорректный, пустой или неожиданный ответ внешней системы."""
+
+    @classmethod
+    def invalid_json(cls, exc: object) -> AdapterResponseError:
+        return cls(f"Внешняя система вернула некорректный JSON: {exc}")
+
+    @classmethod
+    def unexpected_structure(cls, system: str, payload: object) -> AdapterResponseError:
+        return cls(f"{system} вернул неожиданную структуру: {payload}")
+
+    @classmethod
+    def items_not_list(cls, system: str, items_key: str) -> AdapterResponseError:
+        return cls(f"Поле «{items_key}» в ответе {system} должно быть списком")
+
+    @classmethod
+    def item_without_name(cls, system: str, item: object) -> AdapterResponseError:
+        return cls(f"Элемент справочника {system} без наименования: {item}")
+
+
+class RestSourceConfigError(ValueError):
+    """Ошибка конфигурации фабрики REST-источника."""
+
+    @classmethod
+    def unknown_auth_kind(cls, system: str, auth_kind: str) -> RestSourceConfigError:
+        return cls(f"{system}: неизвестный auth_kind {auth_kind!r} (нужен bearer|basic|none)")
+
+    @classmethod
+    def unknown_body_kind(cls, system: str, body_kind: str) -> RestSourceConfigError:
+        return cls(f"{system}: неизвестный body_kind {body_kind!r}")
 
 
 def http_transport(url: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
@@ -52,12 +96,10 @@ def http_transport(url: str, body: bytes | None, headers: dict[str, str], timeou
             return response.read()
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            raise AdapterAuthError(
-                f"Внешняя система отклонила учётные данные ({url}, HTTP {exc.code})"
-            ) from None
-        raise AdapterError(f"Внешняя система вернула HTTP {exc.code} для {url}") from None
+            raise AdapterAuthError.rejected_credentials(url, exc.code) from None
+        raise AdapterError.http_status(url, exc.code) from None
     except urllib.error.URLError as exc:
-        raise AdapterError(f"Не удалось подключиться к внешней системе ({url}): {exc.reason}") from None
+        raise AdapterError.connection(url, exc.reason) from None
 
 
 def basic_authorization(credentials: str) -> str:
@@ -108,7 +150,7 @@ def fetch_json(config: RestConfig, transport: Transport = http_transport,
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AdapterResponseError(f"Внешняя система вернула некорректный JSON: {exc}") from None
+        raise AdapterResponseError.invalid_json(exc) from None
     return payload
 
 
@@ -137,27 +179,118 @@ def build_outcome(items: list[Any], map_one: Callable[[Any], Product]) -> Import
     return ImportOutcome(products=products, total=len(items), skipped=skipped)
 
 
-def make_rest_source(
-    system: str,
-    *,
-    base_url_env: str,
-    endpoint: str,
-    location: str,
-    token_env: str | None = None,
-    username_env: str | None = None,
-    password_env: str | None = None,
-    endpoint_env: str | None = None,
-    default_base_url: str = "",
-    auth_kind: str = "bearer",
-    body_kind: str | None = None,
-    command: str = "",
-    items_key: str | None = None,
-    unit_nested: bool = False,
-    name_field: str = "name",
-    unit_field: str = "unit",
-    name_field_env: str | None = None,
-    unit_field_env: str | None = None,
-) -> Callable[..., ImportOutcome]:
+@dataclass(frozen=True)
+class RestSourceSpec:
+    """Параметры подключения REST-источника для :func:`make_rest_source`."""
+
+    system: str
+    base_url_env: str
+    endpoint: str
+    location: str
+    token_env: str | None = None
+    username_env: str | None = None
+    password_env: str | None = None
+    endpoint_env: str | None = None
+    default_base_url: str = ""
+    auth_kind: str = "bearer"
+    body_kind: str | None = None
+    command: str = ""
+    items_key: str | None = None
+    unit_nested: bool = False
+    name_field: str = "name"
+    unit_field: str = "unit"
+    name_field_env: str | None = None
+    unit_field_env: str | None = None
+
+
+def _validate_spec(spec: RestSourceSpec) -> None:
+    if spec.auth_kind not in ("bearer", "basic", "none"):
+        raise RestSourceConfigError.unknown_auth_kind(spec.system, spec.auth_kind)
+    if spec.body_kind not in (None, "json-empty", "form-command"):
+        raise RestSourceConfigError.unknown_body_kind(spec.system, spec.body_kind)
+
+
+def _rest_config_from_env(spec: RestSourceSpec) -> RestConfig:
+    base_url = os.environ.get(spec.base_url_env, spec.default_base_url).rstrip("/")
+    token = os.environ.get(spec.token_env, "") if spec.token_env else ""
+    username = os.environ.get(spec.username_env, "") if spec.username_env else ""
+    password = os.environ.get(spec.password_env, "") if spec.password_env else ""
+    required: list[tuple[str, str]] = [(spec.base_url_env, base_url)]
+    if spec.auth_kind == "bearer" and spec.token_env:
+        required.append((spec.token_env, token))
+    if spec.auth_kind == "basic":
+        required.extend((
+            (spec.username_env or "", username),
+            (spec.password_env or "", password),
+        ))
+    missing = [env for env, value in required if env and not value]
+    if missing:
+        raise AdapterAuthError.missing_env(spec.system, missing)
+    endpoint = os.environ.get(spec.endpoint_env, spec.endpoint) if spec.endpoint_env else spec.endpoint
+    name_field = (
+        os.environ.get(spec.name_field_env, spec.name_field) if spec.name_field_env else spec.name_field
+    )
+    unit_field = (
+        os.environ.get(spec.unit_field_env, spec.unit_field) if spec.unit_field_env else spec.unit_field
+    )
+    return RestConfig(
+        base_url=base_url,
+        endpoint=endpoint,
+        token=token,
+        username=username,
+        password=password,
+        auth_kind=spec.auth_kind,
+        name_field=name_field,
+        unit_field=unit_field,
+    )
+
+
+def _map_product(spec: RestSourceSpec, item: dict, cfg: RestConfig) -> Product:
+    # Поля из явно переданного конфига имеют приоритет; пустые значения
+    # заменяются системными именами фабрики.
+    name_key = cfg.name_field or spec.name_field
+    unit_key = cfg.unit_field or spec.unit_field
+    name = str(item.get(name_key, "")).strip()
+    if not name:
+        raise AdapterResponseError.item_without_name(spec.system, item)
+    raw_unit = item.get(unit_key)
+    if spec.unit_nested and isinstance(raw_unit, dict):
+        unit = str(raw_unit.get("name", ""))
+    else:
+        unit = str(raw_unit) if raw_unit else ""
+    return Product(
+        name=name,
+        quantity=0.0,
+        unit=unit or "шт.",
+        location=spec.location,
+        expires_at=None,
+        status="active",
+    )
+
+
+def _request_body(spec: RestSourceSpec) -> tuple[bytes | None, dict[str, str]]:
+    if spec.body_kind == "json-empty":
+        return json.dumps({}).encode("utf-8"), {"Content-Type": "application/json"}
+    if spec.body_kind == "form-command":
+        params = urllib.parse.urlencode({"cmd": spec.command}).encode("utf-8")
+        return params, {"Content-Type": "application/x-www-form-urlencoded"}
+    return None, {}
+
+
+def _extract_items(spec: RestSourceSpec, payload: Any) -> list[Any]:
+    if spec.items_key is not None:
+        if not isinstance(payload, dict) or spec.items_key not in payload:
+            raise AdapterResponseError.unexpected_structure(spec.system, payload)
+        items = payload[spec.items_key]
+        if not isinstance(items, list):
+            raise AdapterResponseError.items_not_list(spec.system, spec.items_key)
+        return items
+    if not isinstance(payload, list):
+        raise AdapterResponseError.unexpected_structure(spec.system, payload)
+    return payload
+
+
+def make_rest_source(spec: RestSourceSpec) -> Callable[..., ImportOutcome]:
     """Собирает импортёр справочника из параметров подключения (волна 5, п.11).
 
     Одна фабрика вместо пяти почти идентичных модулей: ``iiko``, ``quickresto``,
@@ -184,96 +317,13 @@ def make_rest_source(
     Секрет отправляется ровно одним каналом — заголовком Authorization
     (п.14): тело формы и другие поверхности утечки не используются.
     """
-    if auth_kind not in ("bearer", "basic", "none"):
-        raise ValueError(f"{system}: неизвестный auth_kind {auth_kind!r} (нужен bearer|basic|none)")
-    if body_kind not in (None, "json-empty", "form-command"):
-        raise ValueError(f"{system}: неизвестный body_kind {body_kind!r}")
-
-    def _config_from_env() -> RestConfig:
-        base_url = os.environ.get(base_url_env, default_base_url).rstrip("/")
-        token = os.environ.get(token_env, "") if token_env else ""
-        username = os.environ.get(username_env, "") if username_env else ""
-        password = os.environ.get(password_env, "") if password_env else ""
-        required: list[tuple[str, str]] = [(base_url_env, base_url)]
-        if auth_kind == "bearer" and token_env:
-            required.append((token_env, token))
-        if auth_kind == "basic":
-            required.extend((
-                (username_env or "", username),
-                (password_env or "", password),
-            ))
-        missing = [env for env, value in required if env and not value]
-        if missing:
-            raise AdapterAuthError(
-                f"Не заданы переменные окружения для {system}: " + ", ".join(missing)
-            )
-        resolved_endpoint = os.environ.get(endpoint_env, endpoint) if endpoint_env else endpoint
-        resolved_name_field = (
-            os.environ.get(name_field_env, name_field) if name_field_env else name_field
-        )
-        resolved_unit_field = (
-            os.environ.get(unit_field_env, unit_field) if unit_field_env else unit_field
-        )
-        return RestConfig(
-            base_url=base_url,
-            endpoint=resolved_endpoint,
-            token=token,
-            username=username,
-            password=password,
-            auth_kind=auth_kind,
-            name_field=resolved_name_field,
-            unit_field=resolved_unit_field,
-        )
-
-    def _map_product(item: dict, cfg: RestConfig) -> Product:
-        # Поля из явно переданного конфига имеют приоритет; пустые значения
-        # заменяются системными именами фабрики.
-        name_key = cfg.name_field or name_field
-        unit_key = cfg.unit_field or unit_field
-        name = str(item.get(name_key, "")).strip()
-        if not name:
-            raise AdapterResponseError(f"Элемент справочника {system} без наименования: {item}")
-        raw_unit = item.get(unit_key)
-        if unit_nested and isinstance(raw_unit, dict):
-            unit = str(raw_unit.get("name", ""))
-        else:
-            unit = str(raw_unit) if raw_unit else ""
-        return Product(
-            name=name,
-            quantity=0.0,
-            unit=unit or "шт.",
-            location=location,
-            expires_at=None,
-            status="active",
-        )
-
-    def _request_body() -> tuple[bytes | None, dict[str, str]]:
-        if body_kind == "json-empty":
-            return json.dumps({}).encode("utf-8"), {"Content-Type": "application/json"}
-        if body_kind == "form-command":
-            params = urllib.parse.urlencode({"cmd": command}).encode("utf-8")
-            return params, {"Content-Type": "application/x-www-form-urlencoded"}
-        return None, {}
-
-    def _extract_items(payload: Any) -> list[Any]:
-        if items_key is not None:
-            if not isinstance(payload, dict) or items_key not in payload:
-                raise AdapterResponseError(f"{system} вернул неожиданную структуру: {payload}")
-            items = payload[items_key]
-            if not isinstance(items, list):
-                raise AdapterResponseError(
-                    f"Поле «{items_key}» в ответе {system} должно быть списком"
-                )
-            return items
-        if not isinstance(payload, list):
-            raise AdapterResponseError(f"{system} вернул неожиданную структуру: {payload}")
-        return payload
+    _validate_spec(spec)
 
     def import_products(config: RestConfig | None = None,
                         transport: Transport = http_transport) -> ImportOutcome:
-        cfg = config or _config_from_env()
-        body, headers = _request_body()
+        cfg = config or _rest_config_from_env(spec)
+        body, headers = _request_body(spec)
         payload = fetch_json(cfg, transport, body=body, headers=headers or None)
-        return build_outcome(_extract_items(payload), lambda item: _map_product(item, cfg))
+        return build_outcome(_extract_items(spec, payload), lambda item: _map_product(spec, item, cfg))
 
     return import_products

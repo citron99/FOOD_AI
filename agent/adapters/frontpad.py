@@ -19,7 +19,7 @@ FrontPad — облачная POS/CRM для кафе и ресторанов, �
 """
 from __future__ import annotations
 
-from agent.adapters.base import make_rest_source
+from agent.adapters.base import RestSourceSpec, make_rest_source
 
 SYSTEM = "frontpad"
 
@@ -28,12 +28,12 @@ COMMAND = "getProducts"
 NAME_FIELD = "name"
 UNIT_FIELD = "unit"
 
-import_products = make_rest_source(
-    "FrontPad",
+import_products = make_rest_source(RestSourceSpec(
+    system="FrontPad",
     base_url_env="FRONTPAD_BASE_URL",
     token_env="FRONTPAD_SECRET",
     endpoint="/api/",
     body_kind="form-command",
     command=COMMAND,
     location="FrontPad (справочник)",
-)
+))

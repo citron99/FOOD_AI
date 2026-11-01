@@ -18,12 +18,12 @@ endpoint и имена полей задаются через переменны
 """
 from __future__ import annotations
 
-from agent.adapters.base import make_rest_source
+from agent.adapters.base import RestSourceSpec, make_rest_source
 
 SYSTEM = "yuma"
 
-import_products = make_rest_source(
-    "YUMA",
+import_products = make_rest_source(RestSourceSpec(
+    system="YUMA",
     base_url_env="YUMA_BASE_URL",
     token_env="YUMA_API_TOKEN",
     endpoint="/api/v1/products",
@@ -31,4 +31,4 @@ import_products = make_rest_source(
     name_field_env="YUMA_NAME_FIELD",
     unit_field_env="YUMA_UNIT_FIELD",
     location="YUMA (справочник)",
-)
+))

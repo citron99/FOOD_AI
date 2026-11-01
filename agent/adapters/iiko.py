@@ -18,7 +18,7 @@ iiko; по умолчанию отправляется пустой объект
 """
 from __future__ import annotations
 
-from agent.adapters.base import make_rest_source
+from agent.adapters.base import RestSourceSpec, make_rest_source
 
 SYSTEM = "iiko"
 
@@ -27,8 +27,8 @@ SYSTEM = "iiko"
 NAME_FIELD = "name"
 UNIT_FIELD = "mainUnit"
 
-import_products = make_rest_source(
-    "iiko",
+import_products = make_rest_source(RestSourceSpec(
+    system="iiko",
     base_url_env="IIKO_BASE_URL",
     token_env="IIKO_API_TOKEN",
     endpoint="/api/1/nomenclature",
@@ -38,4 +38,4 @@ import_products = make_rest_source(
     unit_nested=True,
     unit_field=UNIT_FIELD,
     location="iiko (номенклатура)",
-)
+))
