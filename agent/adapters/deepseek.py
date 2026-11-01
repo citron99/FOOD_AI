@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from agent.adapters.base import (
     AdapterError,
@@ -43,6 +44,37 @@ DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 30.0
 
 
+class DeepSeekConfigError(AdapterError):
+    """Ошибка конфигурации подключения к DeepSeek."""
+
+    @classmethod
+    def missing_api_key(cls) -> DeepSeekConfigError:
+        return cls(
+            "Не задана переменная окружения DEEPSEEK_API_KEY "
+            "(ключ из кабинета DeepSeek, platform.deepseek.com)."
+        )
+
+    @classmethod
+    def invalid_timeout(cls, raw: str) -> DeepSeekConfigError:
+        return cls(f"DEEPSEEK_TIMEOUT должно быть числом секунд, получено: {raw!r}")
+
+    @classmethod
+    def non_positive_timeout(cls) -> DeepSeekConfigError:
+        return cls("DEEPSEEK_TIMEOUT должно быть положительным числом секунд")
+
+
+class DeepSeekResponseError(AdapterResponseError):
+    """Неожиданный ответ DeepSeek."""
+
+    @classmethod
+    def missing_choices(cls, payload: object) -> DeepSeekResponseError:
+        return cls(f"DeepSeek вернул ответ без «choices»: {payload}")
+
+    @classmethod
+    def empty_content(cls, payload: object) -> DeepSeekResponseError:
+        return cls(f"DeepSeek вернул пустой текст ответа: {payload}")
+
+
 def _resolve_timeout() -> float:
     """Таймаут из DEEPSEEK_TIMEOUT; молча игнорировать опечатку нельзя."""
     raw = os.environ.get("DEEPSEEK_TIMEOUT", "").strip()
@@ -51,31 +83,37 @@ def _resolve_timeout() -> float:
     try:
         value = float(raw)
     except ValueError:
-        raise AdapterError(
-            f"DEEPSEEK_TIMEOUT должно быть числом секунд, получено: {raw!r}"
-        ) from None
+        raise DeepSeekConfigError.invalid_timeout(raw) from None
     if value <= 0:
-        raise AdapterError("DEEPSEEK_TIMEOUT должно быть положительным числом секунд")
+        raise DeepSeekConfigError.non_positive_timeout()
     return value
 
 
-def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
-         base_url: str | None = None, model: str | None = None,
-         max_tokens: int = 800, temperature: float = 0.3,
-         timeout: float | None = None,
-         transport: Transport = http_transport) -> str:
+@dataclass(frozen=True)
+class DeepSeekConfig:
+    """Параметры подключения: явное значение важнее переменной окружения."""
+
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    timeout: float | None = None
+    transport: Transport = http_transport
+
+    def resolve(self) -> tuple[str, str, str, float, Transport]:
+        key = self.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        if not key:
+            raise DeepSeekConfigError.missing_api_key()
+        # П.8 ревью: BASE_URL/MODEL задокументированы в .env.example, но не читались.
+        base_url = self.base_url or os.environ.get("DEEPSEEK_BASE_URL") or DEFAULT_BASE_URL
+        model = self.model or os.environ.get("DEEPSEEK_MODEL") or DEFAULT_MODEL
+        timeout = self.timeout if self.timeout is not None else _resolve_timeout()
+        return key, base_url, model, timeout, self.transport
+
+
+def chat(messages: list[dict[str, str]], *, config: DeepSeekConfig | None = None,
+         max_tokens: int = 800, temperature: float = 0.3) -> str:
     """Отправляет диалог в /chat/completions и возвращает текст ответа."""
-    key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
-    if not key:
-        raise AdapterError(
-            "Не задана переменная окружения DEEPSEEK_API_KEY "
-            "(ключ из кабинета DeepSeek, platform.deepseek.com)."
-        )
-    # П.8 ревью: BASE_URL/MODEL задокументированы в .env.example, но не читались.
-    base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL") or DEFAULT_BASE_URL
-    model = model or os.environ.get("DEEPSEEK_MODEL") or DEFAULT_MODEL
-    if timeout is None:
-        timeout = _resolve_timeout()
+    key, base_url, model, timeout, transport = (config or DeepSeekConfig()).resolve()
     cfg = RestConfig(base_url=base_url, endpoint="/chat/completions", token=key,
                      timeout=timeout)
     body = json.dumps({
@@ -88,18 +126,15 @@ def chat(messages: list[dict[str, str]], *, api_key: str | None = None,
                          headers={"Content-Type": "application/json"})
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not choices:
-        raise AdapterResponseError(f"DeepSeek вернул ответ без «choices»: {payload}")
+        raise DeepSeekResponseError.missing_choices(payload)
     content = choices[0].get("message", {}).get("content")
     if not content:
-        raise AdapterResponseError(f"DeepSeek вернул пустой текст ответа: {payload}")
+        raise DeepSeekResponseError.empty_content(payload)
     return str(content)
 
 
-def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
-                       base_url: str | None = None, model: str | None = None,
-                       allergens: Iterable[str] | None = None,
-                       timeout: float | None = None,
-                       transport: Transport = http_transport) -> str:
+def suggest_menu_ideas(products: list[Product], *, config: DeepSeekConfig | None = None,
+                       allergens: Iterable[str] | None = None) -> str:
     """Просит DeepSeek предложить блюда из списка продуктов.
 
     ``allergens`` — аллергены из профиля семьи. Они попадают прямо в промпт,
@@ -131,9 +166,4 @@ def suggest_menu_ideas(products: list[Product], *, api_key: str | None = None,
             "блюда перечисли все ингредиенты, чтобы ограничение можно было "
             "проверить."
         )
-    return chat(
-        [{"role": "user", "content": prompt}],
-        api_key=api_key, base_url=base_url, model=model,
-        timeout=timeout,
-        transport=transport,
-    )
+    return chat([{"role": "user", "content": prompt}], config=config)

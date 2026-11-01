@@ -17,11 +17,23 @@ from agent.adapters.base import AdapterError
 from agent.models import Product
 
 
+class SourceRegistryError(AdapterError):
+    """Ошибка выбора источника данных."""
+
+    @classmethod
+    def without_products(cls, outcome: object) -> SourceRegistryError:
+        return cls(f"Адаптер вернул результат без списка продуктов: {outcome!r}")
+
+    @classmethod
+    def unknown_source(cls, name: str) -> SourceRegistryError:
+        return cls(f"Неизвестный источник «{name}». Доступные: {', '.join(available_sources())}")
+
+
 def _products(outcome: object) -> list[Product]:
     """Возвращает список продуктов из результата адаптера (ImportOutcome)."""
     products = getattr(outcome, "products", None)
     if products is None:
-        raise AdapterError(f"Адаптер вернул результат без списка продуктов: {outcome!r}")
+        raise SourceRegistryError.without_products(outcome)
     return list(products)
 
 
@@ -68,7 +80,5 @@ def load_source(name: str) -> list[Product]:
     try:
         loader = SOURCES[name]
     except KeyError:
-        raise AdapterError(
-            f"Неизвестный источник «{name}». Доступные: {', '.join(available_sources())}"
-        ) from None
+        raise SourceRegistryError.unknown_source(name) from None
     return loader()

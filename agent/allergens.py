@@ -57,6 +57,46 @@ STEM_LENGTH = 4
 DEFAULT_SYNONYMS_PATH = Path(__file__).resolve().parents[1] / "data" / "allergen_synonyms.json"
 
 
+class AllergenProfileError(AdapterError):
+    """Ошибка чтения профиля семьи с аллергенами."""
+
+    @classmethod
+    def not_found(cls, path: Path) -> AllergenProfileError:
+        return cls(f"Профиль семьи не найден: {path}")
+
+    @classmethod
+    def invalid_json(cls, path: Path, exc: object) -> AllergenProfileError:
+        return cls(f"Профиль семьи не является корректным JSON: {path} ({exc})")
+
+    @classmethod
+    def not_object(cls, path: Path) -> AllergenProfileError:
+        return cls(f"Профиль семьи в {path} должен быть объектом с полем «allergens»")
+
+    @classmethod
+    def allergens_not_list(cls, path: Path) -> AllergenProfileError:
+        return cls(f"Поле «allergens» в {path} должно быть списком")
+
+
+class AllergenSynonymsError(AdapterError):
+    """Ошибка чтения словаря синонимов аллергенов."""
+
+    @classmethod
+    def unreadable(cls, path: Path, exc: object) -> AllergenSynonymsError:
+        return cls(f"Не удалось прочитать словарь синонимов аллергенов {path}: {exc}")
+
+    @classmethod
+    def invalid_json(cls, path: Path, exc: object) -> AllergenSynonymsError:
+        return cls(f"Словарь синонимов аллергенов не является корректным JSON: {path} ({exc})")
+
+    @classmethod
+    def not_object(cls, path: Path) -> AllergenSynonymsError:
+        return cls(f"Словарь синонимов в {path} должен быть объектом «аллерген: [слова]»")
+
+    @classmethod
+    def value_not_list(cls, allergen: str, path: Path) -> AllergenSynonymsError:
+        return cls(f"Значение для аллергена «{allergen}» в {path} должно быть списком слов")
+
+
 def normalize(text: str) -> str:
     """Нижний регистр и замена «ё» на «е» — единая форма для текста и аллергенов."""
     return str(text).lower().replace("ё", "е")
@@ -91,14 +131,14 @@ def load_allergens(path: Path) -> set[str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise AdapterError(f"Профиль семьи не найден: {path}") from None
+        raise AllergenProfileError.not_found(path) from None
     except json.JSONDecodeError as exc:
-        raise AdapterError(f"Профиль семьи не является корректным JSON: {path} ({exc})") from None
+        raise AllergenProfileError.invalid_json(path, exc) from None
     if not isinstance(payload, dict):
-        raise AdapterError(f"Профиль семьи в {path} должен быть объектом с полем «allergens»")
+        raise AllergenProfileError.not_object(path)
     allergens = payload.get("allergens", [])
     if not isinstance(allergens, list):
-        raise AdapterError(f"Поле «allergens» в {path} должно быть списком")
+        raise AllergenProfileError.allergens_not_list(path)
     result = set()
     for item in allergens:
         normalized = normalize(item).strip()
@@ -119,22 +159,20 @@ def load_synonyms(path: Path = DEFAULT_SYNONYMS_PATH) -> dict[str, set[str]]:
     except FileNotFoundError:
         return {}
     except OSError as exc:
-        raise AdapterError(f"Не удалось прочитать словарь синонимов аллергенов {path}: {exc}") from None
+        raise AllergenSynonymsError.unreadable(path, exc) from None
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise AdapterError(f"Словарь синонимов аллергенов не является корректным JSON: {path} ({exc})") from None
+        raise AllergenSynonymsError.invalid_json(path, exc) from None
     if not isinstance(payload, dict):
-        raise AdapterError(f"Словарь синонимов в {path} должен быть объектом «аллерген: [слова]»")
+        raise AllergenSynonymsError.not_object(path)
     synonyms: dict[str, set[str]] = {}
     for key, values in payload.items():
         allergen = normalize(key).strip()
         if not allergen or allergen.startswith("_"):
             continue  # служебные ключи вроде "_comment"
         if not isinstance(values, list):
-            raise AdapterError(
-                f"Значение для аллергена «{allergen}» в {path} должно быть списком слов"
-            )
+            raise AllergenSynonymsError.value_not_list(allergen, path)
         words = {normalize(value).strip() for value in values}
         synonyms[allergen] = {word for word in words if word}
     return synonyms

@@ -14,6 +14,15 @@ from datetime import date, datetime
 from typing import Any
 
 
+class InvalidDateError(ValueError):
+    """Неверный формат даты у продукта."""
+
+    def __init__(self, name: str, value: Any) -> None:
+        super().__init__(
+            f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
+        )
+
+
 @dataclass(frozen=True)
 class Product:
     name: str
@@ -37,12 +46,8 @@ def parse_date(value: Any, name: str) -> date | None:
     if not isinstance(value, str):
         # Волна 3: единый ValueError с именем продукта для любого неверного
         # формата даты (тесты и README зафиксировали ValueError, не TypeError).
-        raise ValueError(  # noqa: TRY004
-            f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
-        )
+        raise InvalidDateError(name, value)
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()  # сроки годности хранятся как наивные локальные даты
     except ValueError:
-        raise ValueError(
-            f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
-        ) from None
+        raise InvalidDateError(name, value) from None

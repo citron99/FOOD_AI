@@ -65,6 +65,40 @@ class RkeeperAuthError(RkeeperError, AdapterAuthError):
 class RkeeperResponseError(RkeeperError, AdapterResponseError):
     """Некорректный или пустой ответ R:keeper."""
 
+    @classmethod
+    def too_large(cls, size: int, limit: int) -> RkeeperResponseError:
+        return cls(
+            f"Ответ R:keeper слишком велик: {size} байт "
+            f"(лимит {limit}). Возможно, справочник избыточен — "
+            "уточните RefName/IgnoreInactive или увеличьте max_response_bytes."
+        )
+
+    @classmethod
+    def doctype_forbidden(cls) -> RkeeperResponseError:
+        return cls(
+            "Ответ R:keeper содержит объявление DOCTYPE, которое XML-интерфейс "
+            "RK7 не использует. Ответ отклонён из соображений безопасности "
+            "(внутренние/внешние сущности XML)."
+        )
+
+    @classmethod
+    def invalid_xml(cls, exc: object) -> RkeeperResponseError:
+        return cls(f"R:keeper вернул некорректный XML: {exc}")
+
+    @classmethod
+    def query_rejected(cls, ref_name: str, error_text: object) -> RkeeperResponseError:
+        return cls(
+            f"R:keeper отклонил запрос справочника «{ref_name}»: {error_text}"
+        )
+
+    @classmethod
+    def empty_directory(cls, ref_name: str, item_tag: str) -> RkeeperResponseError:
+        return cls(f"Справочник «{ref_name}» пуст или не содержит тегов «{item_tag}»")
+
+    @classmethod
+    def item_without_name(cls, attr: str, item: object) -> RkeeperResponseError:
+        return cls(f"Элемент справочника без наименования (атрибут «{attr}»): {item}")
+
 
 # Обратная совместимость (волна 5, п.12): прежний собственный ``ImportResult``
 # заменён общим ``ImportOutcome`` из base.py; алиас сохраняет старые импорты.
@@ -131,11 +165,7 @@ def fetch_product_directory(
     url = f"{config.base_url}/rk7api/v1"
     raw = transport(url, body, headers, config.timeout)
     if len(raw) > config.max_response_bytes:
-        raise RkeeperResponseError(
-            f"Ответ R:keeper слишком велик: {len(raw)} байт "
-            f"(лимит {config.max_response_bytes}). Возможно, справочник избыточен — "
-            "уточните RefName/IgnoreInactive или увеличьте max_response_bytes."
-        )
+        raise RkeeperResponseError.too_large(len(raw), config.max_response_bytes)
     return _parse_directory(raw, config)
 
 
@@ -149,25 +179,18 @@ _DOCTYPE_RE = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 
 def _parse_directory(raw: bytes, config: RkeeperConfig) -> list[dict[str, Any]]:
     if _DOCTYPE_RE.search(raw):
-        raise RkeeperResponseError(
-            "Ответ R:keeper содержит объявление DOCTYPE, которое XML-интерфейс "
-            "RK7 не использует. Ответ отклонён из соображений безопасности "
-            "(внутренние/внешние сущности XML)."
-        )
+        raise RkeeperResponseError.doctype_forbidden()
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
-        raise RkeeperResponseError(f"R:keeper вернул некорректный XML: {exc}") from None
+        raise RkeeperResponseError.invalid_xml(exc) from None
     if root.get("Status") == "QueryError":
-        raise RkeeperResponseError(
-            f"R:keeper отклонил запрос справочника «{config.ref_name}»: "
-            f"{root.get('ErrorText', 'причина не указана')}"
+        raise RkeeperResponseError.query_rejected(
+            config.ref_name, root.get("ErrorText", "причина не указана")
         )
     items = [dict(element.attrib) for element in root.iter(config.item_tag)]
     if not items:
-        raise RkeeperResponseError(
-            f"Справочник «{config.ref_name}» пуст или не содержит тегов «{config.item_tag}»"
-        )
+        raise RkeeperResponseError.empty_directory(config.ref_name, config.item_tag)
     return items
 
 
@@ -180,9 +203,7 @@ def map_rk_item(item: dict[str, Any], config: RkeeperConfig) -> Product:
     """
     name = str(item.get(config.name_attr, "")).strip()
     if not name:
-        raise RkeeperResponseError(
-            f"Элемент справочника без наименования (атрибут «{config.name_attr}»): {item}"
-        )
+        raise RkeeperResponseError.item_without_name(config.name_attr, item)
     return Product(
         name=name,
         quantity=0.0,

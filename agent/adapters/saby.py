@@ -19,12 +19,12 @@ Saby Presto — экосистема автоматизации ресторан
 """
 from __future__ import annotations
 
-from agent.adapters.base import make_rest_source
+from agent.adapters.base import RestSourceSpec, make_rest_source
 
 SYSTEM = "saby"
 
-import_products = make_rest_source(
-    "Saby",
+import_products = make_rest_source(RestSourceSpec(
+    system="Saby",
     base_url_env="SABY_BASE_URL",
     token_env="SABY_API_TOKEN",
     endpoint="/api/v1/products",
@@ -32,4 +32,4 @@ import_products = make_rest_source(
     name_field_env="SABY_NAME_FIELD",
     unit_field_env="SABY_UNIT_FIELD",
     location="Saby Presto (справочник)",
-)
+))
