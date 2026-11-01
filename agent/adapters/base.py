@@ -23,13 +23,15 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Protocol, TypeVar, cast
 
 from agent.models import Product
 
 Transport = Callable[[str, bytes | None, dict[str, str], float], bytes]
+
+_ItemT = TypeVar("_ItemT")
 
 
 class AdapterError(Exception):
@@ -143,12 +145,16 @@ class RestConfig:
 
 
 def fetch_json(config: RestConfig, transport: Transport = http_transport,
-               body: bytes | None = None, headers: dict[str, str] | None = None) -> Any:
-    """Выполняет запрос и разбирает JSON-ответ с понятными ошибками."""
+               body: bytes | None = None, headers: dict[str, str] | None = None) -> object:
+    """Выполняет запрос и разбирает JSON-ответ с понятными ошибками.
+
+    Возвращает ``object``: структура ответа внешней системы неизвестна до
+    проверки, поэтому сужать тип должен вызывающий адаптер.
+    """
     all_headers = {"Accept": "application/json", **config.auth_headers(), **(headers or {})}
     raw = transport(config.url, body, all_headers, config.timeout)
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload: object = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterResponseError.invalid_json(exc) from None
     return payload
@@ -167,7 +173,14 @@ class ImportOutcome:
         return len(self.products)
 
 
-def build_outcome(items: list[Any], map_one: Callable[[Any], Product]) -> ImportOutcome:
+class RestImporter(Protocol):
+    """Импортёр справочника, собранный :func:`make_rest_source`."""
+
+    def __call__(self, config: RestConfig | None = None,
+                 transport: Transport = http_transport) -> ImportOutcome: ...
+
+
+def build_outcome(items: list[_ItemT], map_one: Callable[[_ItemT], Product]) -> ImportOutcome:
     """Маппит список сырых элементов, считая пропущенные позиции."""
     products: list[Product] = []
     skipped = 0
@@ -245,7 +258,7 @@ def _rest_config_from_env(spec: RestSourceSpec) -> RestConfig:
     )
 
 
-def _map_product(spec: RestSourceSpec, item: dict[str, Any], cfg: RestConfig) -> Product:
+def _map_product(spec: RestSourceSpec, item: Mapping[str, object], cfg: RestConfig) -> Product:
     # Поля из явно переданного конфига имеют приоритет; пустые значения
     # заменяются системными именами фабрики.
     name_key = cfg.name_field or spec.name_field
@@ -277,20 +290,20 @@ def _request_body(spec: RestSourceSpec) -> tuple[bytes | None, dict[str, str]]:
     return None, {}
 
 
-def _extract_items(spec: RestSourceSpec, payload: Any) -> list[Any]:
+def _extract_items(spec: RestSourceSpec, payload: object) -> list[object]:
     if spec.items_key is not None:
         if not isinstance(payload, dict) or spec.items_key not in payload:
             raise AdapterResponseError.unexpected_structure(spec.system, payload)
-        items = payload[spec.items_key]
-        if not isinstance(items, list):
+        raw: object = payload[spec.items_key]
+        if not isinstance(raw, list):
             raise AdapterResponseError.items_not_list(spec.system, spec.items_key)
-        return items
+        return raw
     if not isinstance(payload, list):
         raise AdapterResponseError.unexpected_structure(spec.system, payload)
     return payload
 
 
-def make_rest_source(spec: RestSourceSpec) -> Callable[..., ImportOutcome]:
+def make_rest_source(spec: RestSourceSpec) -> RestImporter:
     """Собирает импортёр справочника из параметров подключения (волна 5, п.11).
 
     Одна фабрика вместо пяти почти идентичных модулей: ``iiko``, ``quickresto``,
@@ -324,6 +337,12 @@ def make_rest_source(spec: RestSourceSpec) -> Callable[..., ImportOutcome]:
         cfg = config or _rest_config_from_env(spec)
         body, headers = _request_body(spec)
         payload = fetch_json(cfg, transport, body=body, headers=headers or None)
-        return build_outcome(_extract_items(spec, payload), lambda item: _map_product(spec, item, cfg))
+        return build_outcome(
+            _extract_items(spec, payload),
+            # Элементы справочника — JSON-объекты с произвольными именами полей:
+            # контракт известен только в конфигурации источника, поэтому сужение
+            # до Mapping делается здесь, а не в типах внешнего payload'а.
+            lambda item: _map_product(spec, cast("Mapping[str, object]", item), cfg),
+        )
 
     return import_products

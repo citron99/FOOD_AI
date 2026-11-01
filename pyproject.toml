@@ -17,6 +17,7 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 strict_bytes = true
+disallow_any_explicit = true
 
 [tool.ruff]
 target-version = "py311"

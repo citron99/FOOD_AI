@@ -12,13 +12,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
 
 
 class InvalidDateError(ValueError):
     """Неверный формат даты у продукта."""
 
-    def __init__(self, name: str, value: Any) -> None:
+    def __init__(self, name: str, value: object) -> None:
         super().__init__(
             f"Неверный формат даты у продукта «{name}»: {value!r} (нужно ГГГГ-ММ-ДД)"
         )
@@ -37,7 +36,7 @@ class Product:
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def parse_date(value: Any, name: str) -> date | None:
+def parse_date(value: object, name: str) -> date | None:
     """Парсит дату ГГГГ-ММ-ДД; None/пустая строка означают «даты нет».
 
     Волна 3 (п. «валидация входных данных» ревью): нестроковые значения

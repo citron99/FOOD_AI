@@ -32,7 +32,6 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
 
 from agent.adapters.base import (
     AdapterAuthError,
@@ -155,7 +154,7 @@ def _authorization_header(config: RkeeperConfig) -> str:
 def fetch_product_directory(
     config: RkeeperConfig,
     transport: Transport = http_transport,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     """Запрашивает справочник товаров и возвращает сырые атрибуты элементов."""
     body = _PRODUCTS_QUERY.format(ref=config.ref_name).encode("utf-8")
     headers = {
@@ -177,7 +176,7 @@ def fetch_product_directory(
 _DOCTYPE_RE = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 
 
-def _parse_directory(raw: bytes, config: RkeeperConfig) -> list[dict[str, Any]]:
+def _parse_directory(raw: bytes, config: RkeeperConfig) -> list[dict[str, str]]:
     if _DOCTYPE_RE.search(raw):
         raise RkeeperResponseError.doctype_forbidden()
     try:
@@ -194,7 +193,7 @@ def _parse_directory(raw: bytes, config: RkeeperConfig) -> list[dict[str, Any]]:
     return items
 
 
-def map_rk_item(item: dict[str, Any], config: RkeeperConfig) -> Product:
+def map_rk_item(item: dict[str, str], config: RkeeperConfig) -> Product:
     """Маппит один элемент справочника R:keeper на Product.
 
     Остаток и срок годности намеренно не импортируются: в справочнике
