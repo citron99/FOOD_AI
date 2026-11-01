@@ -134,6 +134,22 @@ class SynonymTests(unittest.TestCase):
             with self.assertRaisesRegex(AdapterError, "списком слов"):
                 load_synonyms(Path(directory) / "str.json")
 
+    def test_non_string_synonym_is_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = write_json(directory, "null.json", {"глютен": ["пшеница", None]})
+            with self.assertRaisesRegex(AdapterError, "должен быть строкой"):
+                load_synonyms(path)
+
+    def test_unreadable_dictionary_is_reported(self) -> None:
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(AdapterError, "Не удалось прочитать"):
+                load_synonyms(Path(directory))
+
+            path = Path(directory) / "synonyms.json"
+            path.write_bytes('{"глютен": ["пшеница"]}'.encode("cp1251"))
+            with self.assertRaisesRegex(AdapterError, "Не удалось прочитать"):
+                load_synonyms(path)
+
 
 class FilterTests(unittest.TestCase):
     def test_filter_drops_lines_with_allergens(self) -> None:
@@ -213,6 +229,23 @@ class ProfileLoadingTests(unittest.TestCase):
             broken.write_text("{ не json", encoding="utf-8")
             with self.assertRaisesRegex(AdapterError, "корректным JSON"):
                 load_allergens(broken)
+
+    def test_non_string_allergen_is_rejected(self) -> None:
+        """null раньше становился аллергеном «none» — фильтр работал не с тем словом."""
+        with TemporaryDirectory() as directory:
+            path = write_json(directory, "profile.json", {"allergens": ["орехи", None]})
+            with self.assertRaisesRegex(AdapterError, "должен быть строкой"):
+                load_allergens(path)
+
+    def test_unreadable_profile_is_reported(self) -> None:
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(AdapterError, "Не удалось прочитать"):
+                load_allergens(Path(directory))
+
+            path = Path(directory) / "profile.json"
+            path.write_bytes('{"allergens": ["мёд"]}'.encode("cp1251"))
+            with self.assertRaisesRegex(AdapterError, "Не удалось прочитать"):
+                load_allergens(path)
 
     def test_demo_profile_of_repository_is_loadable(self) -> None:
         allergens = load_allergens(Path(__file__).parents[1] / "data" / "family_profile.json")

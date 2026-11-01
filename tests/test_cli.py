@@ -82,6 +82,36 @@ class CliAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "quantity"):
                 load_products(path)
 
+    def test_null_unit_and_location_use_defaults(self) -> None:
+        """JSON null в необязательных полях раньше печатался как «None»."""
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text(json.dumps({"products": [
+                {"name": "Молоко", "quantity": 1, "unit": None, "location": None}
+            ]}), encoding="utf-8")
+            product = load_products(path)[0]
+            self.assertEqual(product.unit, "шт.")
+            self.assertEqual(product.location, "не указано")
+
+    def test_empty_name_is_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_text(json.dumps({"products": [{"name": "  ", "quantity": 1}]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "пустым"):
+                load_products(path)
+
+    def test_directory_instead_of_file_is_reported_clearly(self) -> None:
+        with (TemporaryDirectory() as directory,
+              self.assertRaisesRegex(ValueError, "Не удалось прочитать")):
+            load_products(Path(directory))
+
+    def test_non_utf8_file_is_reported_clearly(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "inventory.json"
+            path.write_bytes('{"products": [{"name": "Молоко"}]}'.encode("cp1251"))
+            with self.assertRaisesRegex(ValueError, "Не удалось прочитать"):
+                load_products(path)
+
     def test_render_html_produces_standalone_page(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"

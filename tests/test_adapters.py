@@ -1,7 +1,10 @@
 import base64
+import io
 import json
 import os
 import unittest
+import urllib.request
+from http.client import HTTPMessage
 from typing import TypedDict
 
 from agent.adapters import frontpad, iiko, quickresto, registry, saby, yuma
@@ -11,7 +14,9 @@ from agent.adapters.base import (
     AdapterResponseError,
     RestConfig,
     Transport,
+    _SameOriginRedirectHandler,
     basic_authorization,
+    http_transport,
 )
 
 
@@ -115,6 +120,21 @@ class IikoAdapterTests(unittest.TestCase):
     def test_unexpected_structure_raises(self) -> None:
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             iiko.import_products(IIKO_CONFIG, fake_json({"error": "x"}))
+
+    def test_null_name_is_skipped_not_named_none(self) -> None:
+        outcome = iiko.import_products(IIKO_CONFIG, fake_json({"products": [
+            {"name": None, "mainUnit": "кг"},
+        ]}))
+        self.assertEqual(outcome.imported, 0)
+        self.assertEqual(outcome.skipped, 1)
+
+    def test_null_nested_unit_falls_back_to_default(self) -> None:
+        """mainUnit: null и mainUnit: {name: null} раньше давали unit «None»."""
+        outcome = iiko.import_products(IIKO_CONFIG, fake_json({"products": [
+            {"name": "Соль", "mainUnit": {"name": None}},
+            {"name": "Сахар", "mainUnit": None},
+        ]}))
+        self.assertEqual([product.unit for product in outcome.products], ["шт.", "шт."])
 
 
 class QuickRestoAdapterTests(unittest.TestCase):
@@ -222,6 +242,36 @@ class RestConfigAuthTests(unittest.TestCase):
     def test_none_sends_no_secret(self) -> None:
         cfg = RestConfig(base_url="https://x", endpoint="/", auth_kind="none", token="tok")
         self.assertEqual(cfg.auth_headers(), {})
+
+
+class HttpTransportTests(unittest.TestCase):
+    def test_non_http_scheme_is_rejected(self) -> None:
+        # urlopen умеет file:/ftp: — опечатка в base_url не должна читать
+        # локальные файлы вместо справочника внешней системы.
+        with self.assertRaisesRegex(AdapterError, "http/https"):
+            http_transport("file:///etc/passwd", None, {}, 1.0)
+
+    def test_authorization_is_stripped_on_cross_origin_redirect(self) -> None:
+        handler = _SameOriginRedirectHandler()
+        request = urllib.request.Request(
+            "https://pos.example/api", headers={"Authorization": "Bearer SECRET"}
+        )
+        redirected = handler.redirect_request(
+            request, io.BytesIO(b""), 302, "Found", HTTPMessage(), "https://evil.example/steal"
+        )
+        assert redirected is not None
+        self.assertIsNone(redirected.get_header("Authorization"))
+
+    def test_authorization_is_kept_on_same_origin_redirect(self) -> None:
+        handler = _SameOriginRedirectHandler()
+        request = urllib.request.Request(
+            "https://pos.example/api", headers={"Authorization": "Bearer SECRET"}
+        )
+        redirected = handler.redirect_request(
+            request, io.BytesIO(b""), 302, "Found", HTTPMessage(), "https://pos.example/api/v2"
+        )
+        assert redirected is not None
+        self.assertEqual(redirected.get_header("Authorization"), "Bearer SECRET")
 
 
 class RegistryTests(unittest.TestCase):

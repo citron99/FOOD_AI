@@ -25,7 +25,8 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar, cast
+from http.client import HTTPMessage
+from typing import IO, Protocol, TypeVar, cast
 
 from agent.models import Product
 
@@ -44,6 +45,10 @@ class AdapterError(Exception):
     @classmethod
     def connection(cls, url: str, reason: object) -> AdapterError:
         return cls(f"Не удалось подключиться к внешней системе ({url}): {reason}")
+
+    @classmethod
+    def unsupported_scheme(cls, url: str) -> AdapterError:
+        return cls(f"Поддерживаются только http/https URL внешней системы: {url}")
 
 
 class AdapterAuthError(AdapterError):
@@ -90,11 +95,40 @@ class RestSourceConfigError(ValueError):
         return cls(f"{system}: неизвестный body_kind {body_kind!r}")
 
 
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Не переносит Authorization на другой origin при редиректе.
+
+    Стандартный обработчик urllib сохраняет все заголовки, кроме Content-*,
+    поэтому токен POS-системы ушёл бы на чужой хост вместе с редиректом.
+    """
+
+    def redirect_request(  # noqa: PLR0913, PLR0917 — сигнатура stdlib HTTPRedirectHandler
+        self, req: urllib.request.Request, fp: IO[bytes], code: int,
+        msg: str, headers: HTTPMessage, newurl: str,
+    ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _origin(newurl) != _origin(req.full_url):
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+_OPENER = urllib.request.build_opener(_SameOriginRedirectHandler())
+
+
 def http_transport(url: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
     """Транспорт по умолчанию: один HTTP-запрос через стандартную urllib."""
+    if urllib.parse.urlsplit(url).scheme.lower() not in ("http", "https"):
+        # urlopen умеет file:/ftp:, то есть опечатка в base_url читала бы
+        # локальные файлы вместо справочника внешней системы.
+        raise AdapterError.unsupported_scheme(url)
     request = urllib.request.Request(url, data=body, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return bytes(response.read())
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -258,19 +292,24 @@ def _rest_config_from_env(spec: RestSourceSpec) -> RestConfig:
     )
 
 
+def _text(value: object) -> str:
+    """Поле внешнего ответа как строка; JSON null не превращается в «None»."""
+    return "" if value is None else str(value)
+
+
 def _map_product(spec: RestSourceSpec, item: Mapping[str, object], cfg: RestConfig) -> Product:
     # Поля из явно переданного конфига имеют приоритет; пустые значения
     # заменяются системными именами фабрики.
     name_key = cfg.name_field or spec.name_field
     unit_key = cfg.unit_field or spec.unit_field
-    name = str(item.get(name_key, "")).strip()
+    name = _text(item.get(name_key)).strip()
     if not name:
         raise AdapterResponseError.item_without_name(spec.system, item)
     raw_unit = item.get(unit_key)
     if spec.unit_nested and isinstance(raw_unit, dict):
-        unit = str(raw_unit.get("name", ""))
+        unit = _text(raw_unit.get("name"))
     else:
-        unit = str(raw_unit) if raw_unit else ""
+        unit = _text(raw_unit) if raw_unit else ""
     return Product(
         name=name,
         quantity=0.0,
