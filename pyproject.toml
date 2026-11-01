@@ -18,13 +18,37 @@ strict = true
 warn_unreachable = true
 strict_bytes = true
 disallow_any_explicit = true
+enable_error_code = [
+    "ignore-without-code",
+    "truthy-bool",
+    "possibly-undefined",
+    "unused-awaitable",
+]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "B", "BLE", "TRY", "DTZ", "PLR", "RUF"]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "B",
+    "BLE",
+    "TRY",
+    "DTZ",
+    "PLR",
+    "RUF",
+    "C4",
+    "I",
+    "PERF",
+    "PTH",
+    "RET",
+    "SIM",
+    "UP",
+]
 ignore = [
     # Русскоязычные строки, докстринги и комментарии: кириллица не является опечаткой.
     "RUF001",

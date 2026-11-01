@@ -83,17 +83,22 @@ jobs:
       - name: Собрать отчёты
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          # Значения из inputs/переменных попадают в скрипт только через env:
+          # прямая подстановка выражений GitHub в run позволяет вписать shell-команду.
+          REPORT_AS_OF: ${{ github.event.inputs.as_of }}
+          SUGGEST_MENU: ${{ github.event.inputs.suggest_menu }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          as_of="${{ github.event.inputs.as_of }}"
+          as_of="$REPORT_AS_OF"
           as_of_args=()
           if [ -n "$as_of" ]; then as_of_args+=(--as-of "$as_of"); fi
           # --suggest-menu без --strict-llm: если DeepSeek недоступен или ключа нет,
           # отчёт о сроках всё равно выпускается (проверено: rc=0 + предупреждение
           # в stderr). Со --strict-llm тот же случай даёт rc=2 и сорвал бы cron.
-          want_ideas="${{ github.event.inputs.suggest_menu }}"
+          want_ideas="$SUGGEST_MENU"
           ideas_args=()
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "$want_ideas" != "false" ]; then
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] || [ "$want_ideas" != "false" ]; then
             ideas_args+=(--suggest-menu)
           fi
           # Дом: идеи блюд от DeepSeek с hard-filter аллергенов семьи
@@ -134,6 +139,7 @@ jobs:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_DIR: ${{ vars.FTP_DIR }}
         run: |
           set -euo pipefail
           for name in FTP_HOST FTP_USER FTP_PASSWORD; do
@@ -147,7 +153,7 @@ jobs:
           # верно для отдельного аккаунта с «папкой доступа». Заполнено
           # (eda_citron99_garden/public_html): аккаунт видит всю домашнюю папку —
           # так работает основной.
-          dir="${{ vars.FTP_DIR }}"
+          dir="$FTP_DIR"
           dir="${dir#/}"; dir="${dir%/}"
           if [ -n "$dir" ]; then base="ftp://${FTP_HOST}/${dir}"; else base="ftp://${FTP_HOST}"; fi
           # index.html — стартовая страница с выбором режима; отчёты — в подкаталогах.

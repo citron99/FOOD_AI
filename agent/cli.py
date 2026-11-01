@@ -53,6 +53,10 @@ class InventoryError(ValueError):
         return cls(f"Файл инвентаря не найден: {path}")
 
     @classmethod
+    def unreadable(cls, path: Path, exc: object) -> InventoryError:
+        return cls(f"Не удалось прочитать файл инвентаря {path}: {exc}")
+
+    @classmethod
     def invalid_json(cls, path: Path, exc: json.JSONDecodeError) -> InventoryError:
         return cls(f"Файл инвентаря не является корректным JSON: {path} ({exc})")
 
@@ -74,6 +78,10 @@ class InventoryError(ValueError):
     @classmethod
     def missing_name(cls) -> InventoryError:
         return cls("В позиции инвентаря отсутствует обязательное поле «name»")
+
+    @classmethod
+    def empty_name(cls) -> InventoryError:
+        return cls("Поле «name» в позиции инвентаря не может быть пустым")
 
     @classmethod
     def missing_quantity(cls, name: str) -> InventoryError:
@@ -108,6 +116,13 @@ def _read_inventory(path: Path) -> object:
         payload: object = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise InventoryError.file_not_found(path) from None
+    except UnicodeDecodeError as exc:
+        # read_text бросает UnicodeDecodeError для не-UTF8 файлов; это не OSError.
+        raise InventoryError.unreadable(path, exc) from None
+    except OSError as exc:
+        # Каталог вместо файла, нет прав и т.п. — понятная ошибка запуска,
+        # а не трассировка.
+        raise InventoryError.unreadable(path, exc) from None
     except json.JSONDecodeError as exc:
         raise InventoryError.invalid_json(path, exc) from None
     return payload
@@ -124,6 +139,14 @@ def _inventory_items(payload: object, path: Path) -> list[object]:
     return raw_items
 
 
+def _label(value: object, default: str) -> str:
+    """Необязательное текстовое поле: JSON null даёт запасное значение, а не «None»."""
+    if value is None:
+        return default
+    text = str(value)
+    return text if text.strip() else default
+
+
 def _build_product(item: object) -> Product:
     if not isinstance(item, dict):
         # Волна 3: валидация входа даёт ValueError, а не TypeError.
@@ -131,6 +154,10 @@ def _build_product(item: object) -> Product:
     if "name" not in item or item["name"] is None:
         raise InventoryError.missing_name()
     name = str(item["name"])
+    if not name.strip():
+        # Позиция без наименования ломает отчёты («|  | 5 шт. |») и не даёт
+        # пользователю понять, что подтверждать вручную.
+        raise InventoryError.empty_name()
     if "quantity" not in item:
         raise InventoryError.missing_quantity(name)
     try:
@@ -155,8 +182,8 @@ def _build_product(item: object) -> Product:
     return Product(
         name=name,
         quantity=quantity,
-        unit=str(item.get("unit", "шт.")),
-        location=str(item.get("location", "не указано")),
+        unit=_label(item.get("unit"), "шт."),
+        location=_label(item.get("location"), "не указано"),
         expires_at=parse_date(item.get("expires_at"), name),
         status=status,
     )

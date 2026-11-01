@@ -65,6 +65,10 @@ class AllergenProfileError(AdapterError):
         return cls(f"Профиль семьи не найден: {path}")
 
     @classmethod
+    def unreadable(cls, path: Path, exc: object) -> AllergenProfileError:
+        return cls(f"Не удалось прочитать профиль семьи {path}: {exc}")
+
+    @classmethod
     def invalid_json(cls, path: Path, exc: object) -> AllergenProfileError:
         return cls(f"Профиль семьи не является корректным JSON: {path} ({exc})")
 
@@ -75,6 +79,12 @@ class AllergenProfileError(AdapterError):
     @classmethod
     def allergens_not_list(cls, path: Path) -> AllergenProfileError:
         return cls(f"Поле «allergens» в {path} должно быть списком")
+
+    @classmethod
+    def allergen_not_string(cls, path: Path, value: object) -> AllergenProfileError:
+        # Раньше null превращался в аллерген «none», а число — в «123»:
+        # hard-filter молча работал не с тем словом, что записал пользователь.
+        return cls(f"Аллерген в профиле {path} должен быть строкой: {value!r}")
 
 
 class AllergenSynonymsError(AdapterError):
@@ -95,6 +105,10 @@ class AllergenSynonymsError(AdapterError):
     @classmethod
     def value_not_list(cls, allergen: str, path: Path) -> AllergenSynonymsError:
         return cls(f"Значение для аллергена «{allergen}» в {path} должно быть списком слов")
+
+    @classmethod
+    def word_not_string(cls, allergen: str, path: Path, value: object) -> AllergenSynonymsError:
+        return cls(f"Синоним аллергена «{allergen}» в {path} должен быть строкой: {value!r}")
 
 
 def normalize(text: str) -> str:
@@ -129,18 +143,27 @@ def load_allergens(path: Path) -> set[str]:
     «МЁД» возвращается как «мед». Пустые и непечатные элементы пропускаются.
     """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise AllergenProfileError.not_found(path) from None
+    except UnicodeDecodeError as exc:
+        raise AllergenProfileError.unreadable(path, exc) from None
+    except OSError as exc:
+        # Каталог вместо файла, нет прав и т.п. — понятная ошибка, не трассировка.
+        raise AllergenProfileError.unreadable(path, exc) from None
+    try:
+        payload: object = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise AllergenProfileError.invalid_json(path, exc) from None
     if not isinstance(payload, dict):
         raise AllergenProfileError.not_object(path)
-    allergens = payload.get("allergens", [])
+    allergens: object = payload.get("allergens", [])
     if not isinstance(allergens, list):
         raise AllergenProfileError.allergens_not_list(path)
-    result = set()
+    result: set[str] = set()
     for item in allergens:
+        if not isinstance(item, str):
+            raise AllergenProfileError.allergen_not_string(path, item)
         normalized = normalize(item).strip()
         if normalized:
             result.add(normalized)
@@ -158,10 +181,12 @@ def load_synonyms(path: Path = DEFAULT_SYNONYMS_PATH) -> dict[str, set[str]]:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
+    except UnicodeDecodeError as exc:
+        raise AllergenSynonymsError.unreadable(path, exc) from None
     except OSError as exc:
         raise AllergenSynonymsError.unreadable(path, exc) from None
     try:
-        payload = json.loads(raw)
+        payload: object = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise AllergenSynonymsError.invalid_json(path, exc) from None
     if not isinstance(payload, dict):
@@ -173,8 +198,14 @@ def load_synonyms(path: Path = DEFAULT_SYNONYMS_PATH) -> dict[str, set[str]]:
             continue  # служебные ключи вроде "_comment"
         if not isinstance(values, list):
             raise AllergenSynonymsError.value_not_list(allergen, path)
-        words = {normalize(value).strip() for value in values}
-        synonyms[allergen] = {word for word in words if word}
+        words: set[str] = set()
+        for value in values:
+            if not isinstance(value, str):
+                raise AllergenSynonymsError.word_not_string(allergen, path, value)
+            normalized = normalize(value).strip()
+            if normalized:
+                words.add(normalized)
+        synonyms[allergen] = words
     return synonyms
 
 
@@ -225,11 +256,9 @@ def matched_allergens(text: str, allergens: Iterable[str]) -> list[str]:
     в списке окажутся и синонимы («медовый» рядом с «мед»). Для сообщений
     пользователю используйте :func:`matched_profile_allergens`.
     """
-    found = []
-    for allergen in allergens:
-        if contains_allergen(text, {allergen}):
-            found.append(str(allergen))
-    return sorted(found)
+    return sorted(
+        str(allergen) for allergen in allergens if contains_allergen(text, {allergen})
+    )
 
 
 def matched_profile_allergens(text: str, profile: Iterable[str],
