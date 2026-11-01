@@ -460,7 +460,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="источник данных: json или " + ", ".join(available_sources()))
     parser.add_argument("--out", type=Path, default=Path("reports/expiry_report.md"))
     parser.add_argument("--json-out", type=Path, default=None)
-    parser.add_argument("--as-of", type=date.fromisoformat, default=date.today())  # дата расчёта по умолчанию = локальный «сегодня»
+    # Дата расчёта по умолчанию — локальный «сегодня».
+    parser.add_argument("--as-of", type=date.fromisoformat,
+                        default=datetime.now().astimezone().date())
     parser.add_argument("--warning-days", type=int, default=3)
     parser.add_argument("--suggest-menu", action="store_true",
                         help="добавить в отчёт идеи блюд от DeepSeek (нужен DEEPSEEK_API_KEY)")
