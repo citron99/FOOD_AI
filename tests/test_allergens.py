@@ -17,14 +17,14 @@ from agent.allergens import (
 )
 
 
-def write_json(directory: str, name: str, payload) -> Path:
+def write_json(directory: str, name: str, payload: object) -> Path:
     path = Path(directory) / name
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
 
 
 class NormalizeTests(unittest.TestCase):
-    def test_lowercase_and_yo_replaced(self):
+    def test_lowercase_and_yo_replaced(self) -> None:
         self.assertEqual(normalize("МЁД"), "мед")
         self.assertEqual(normalize("Сгущёнка"), "сгущенка")
 
@@ -32,21 +32,21 @@ class NormalizeTests(unittest.TestCase):
 class MatchingTests(unittest.TestCase):
     """Правила сравнения из докстроки agent/allergens.py."""
 
-    def test_case_insensitive(self):
+    def test_case_insensitive(self) -> None:
         self.assertTrue(contains_allergen("Салат с грецкими Орехами", {"орехи"}))
         self.assertFalse(contains_allergen("Куриное филе с брокколи", {"орехи", "мед"}))
 
-    def test_yo_is_matched_in_both_text_and_allergen(self):
+    def test_yo_is_matched_in_both_text_and_allergen(self) -> None:
         """Регрессия: аллерген «мёд» не ловил «медом»/«медовик» (опасный пропуск)."""
         self.assertTrue(contains_allergen("Торт с медом", {"мёд"}))
         self.assertTrue(contains_allergen("Медовик со сгущёнкой", {"мед"}))
         self.assertTrue(contains_allergen("Торт с мёдом", {"мед"}))
 
-    def test_stem_covers_word_forms(self):
+    def test_stem_covers_word_forms(self) -> None:
         for text in ("Пирог с орехами", "ореховый соус", "ОРЕХИ"):
             self.assertTrue(contains_allergen(text, {"орехи"}), text)
 
-    def test_short_allergen_does_not_match_everything(self):
+    def test_short_allergen_does_not_match_everything(self) -> None:
         """Регрессия: основа «арах» совпадала с союзом «а» и скрывала всё подряд.
 
         Профиль с нормальными аллергенами не должен реагировать на служебные
@@ -62,13 +62,13 @@ class MatchingTests(unittest.TestCase):
         for text in safe:
             self.assertFalse(contains_allergen(text, profile), text)
 
-    def test_short_allergen_in_profile_matches_only_exactly(self):
+    def test_short_allergen_in_profile_matches_only_exactly(self) -> None:
         """Короткое слово профиля остаётся точным совпадением (защита от пропуска)."""
         self.assertTrue(contains_allergen("Икра кабачковая", {"икра"}))
         self.assertTrue(contains_allergen("Соус а-ля провансаль", {"а"}))
         self.assertFalse(contains_allergen("Кабачки тушёные", {"а"}))
 
-    def test_multiword_allergen_hides_on_any_word(self):
+    def test_multiword_allergen_hides_on_any_word(self) -> None:
         """ИЛИ-семантика многословного аллергена зафиксирована намеренно.
 
         «Коровье молоко» скрывает и «королевские креветки» — перестраховка:
@@ -84,21 +84,21 @@ class MatchingTests(unittest.TestCase):
 class SynonymTests(unittest.TestCase):
     SYNONYMS: ClassVar[dict[str, set[str]]] = {"глютен": {"пшеница", "мука"}, "молоко": {"сыр", "лактоза"}}
 
-    def test_expand_adds_synonyms_and_keeps_the_term(self):
+    def test_expand_adds_synonyms_and_keeps_the_term(self) -> None:
         self.assertEqual(
             expand_allergens({"Глютен"}, self.SYNONYMS),
             {"глютен", "пшеница", "мука"},
         )
 
-    def test_expand_uses_words_of_multiword_allergen(self):
+    def test_expand_uses_words_of_multiword_allergen(self) -> None:
         expanded = expand_allergens({"коровье молоко"}, self.SYNONYMS)
         self.assertIn("сыр", expanded)
         self.assertIn("коровье молоко", expanded)
 
-    def test_unknown_allergen_is_kept_as_is(self):
+    def test_unknown_allergen_is_kept_as_is(self) -> None:
         self.assertEqual(expand_allergens({"сельдерей"}, self.SYNONYMS), {"сельдерей"})
 
-    def test_semantic_gap_is_closed(self):
+    def test_semantic_gap_is_closed(self) -> None:
         """Без словаря «глютен» не ловит «пасту из пшеницы с мукой»."""
         self.assertFalse(contains_allergen("Паста из пшеницы с мукой", {"глютен"}))
         self.assertTrue(
@@ -106,7 +106,7 @@ class SynonymTests(unittest.TestCase):
                               expand_allergens({"глютен"}, self.SYNONYMS))
         )
 
-    def test_shipped_dictionary_is_valid_and_useful(self):
+    def test_shipped_dictionary_is_valid_and_useful(self) -> None:
         table = load_synonyms()
         self.assertTrue(DEFAULT_SYNONYMS_PATH.exists(), "data/allergen_synonyms.json потерян")
         self.assertNotIn("_comment", table)  # служебные ключи не аллергены
@@ -116,10 +116,10 @@ class SynonymTests(unittest.TestCase):
             contains_allergen("Паста из пшеницы с мукой", expand_allergens({"глютен"}, table))
         )
 
-    def test_missing_dictionary_is_not_an_error(self):
+    def test_missing_dictionary_is_not_an_error(self) -> None:
         self.assertEqual(load_synonyms(Path("/nonexistent/synonyms.json")), {})
 
-    def test_broken_dictionary_is_reported(self):
+    def test_broken_dictionary_is_reported(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "synonyms.json"
             path.write_text("{ не json", encoding="utf-8")
@@ -136,7 +136,7 @@ class SynonymTests(unittest.TestCase):
 
 
 class FilterTests(unittest.TestCase):
-    def test_filter_drops_lines_with_allergens(self):
+    def test_filter_drops_lines_with_allergens(self) -> None:
         text = (
             "1. Курица с брокколи — филе, брокколи, соль\n"
             "2. Салат с орехами и медом — листья, орехи, мед\n"
@@ -148,21 +148,21 @@ class FilterTests(unittest.TestCase):
         self.assertIn("Суп из овощей", kept)
         self.assertNotIn("Салат с орехами", kept)
 
-    def test_filter_keeps_everything_without_allergens(self):
+    def test_filter_keeps_everything_without_allergens(self) -> None:
         kept, dropped = filter_suggestions("1. Омлет — яйцо, молоко", set())
         self.assertEqual(dropped, 0)
         self.assertIn("Омлет", kept)
 
-    def test_filter_all_lines_dropped(self):
+    def test_filter_all_lines_dropped(self) -> None:
         kept, dropped = filter_suggestions("1. Торт с орехами", {"орехи"})
         self.assertEqual(dropped, 1)
         self.assertEqual(kept, "")
 
-    def test_filter_accepts_iterators(self):
+    def test_filter_accepts_iterators(self) -> None:
         kept, dropped = filter_suggestions("1. Торт с орехами", (a for a in ["орехи"]))
         self.assertEqual((kept, dropped), ("", 1))
 
-    def test_filter_uses_synonyms_of_shipped_dictionary(self):
+    def test_filter_uses_synonyms_of_shipped_dictionary(self) -> None:
         kept, dropped = filter_suggestions(
             "1. Паста из пшеницы с мукой\n2. Рис с овощами",
             expand_allergens({"глютен"}),
@@ -170,7 +170,7 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(dropped, 1)
         self.assertEqual(kept, "2. Рис с овощами")
 
-    def test_matched_profile_allergens_reports_profile_words(self):
+    def test_matched_profile_allergens_reports_profile_words(self) -> None:
         """В отчёте должны быть слова профиля, а не внутренние синонимы."""
         self.assertEqual(
             matched_profile_allergens("Салат с фундуком и медом", {"орехи", "мед"}),
@@ -184,22 +184,22 @@ class FilterTests(unittest.TestCase):
 
 
 class ProfileLoadingTests(unittest.TestCase):
-    def test_load_allergens_normalizes(self):
+    def test_load_allergens_normalizes(self) -> None:
         with TemporaryDirectory() as directory:
             path = write_json(directory, "profile.json",
                               {"family_id": "x", "allergens": [" Орехи ", "МЁД", ""]})
             self.assertEqual(load_allergens(path), {"орехи", "мед"})
 
-    def test_load_allergens_without_field_is_empty_not_error(self):
+    def test_load_allergens_without_field_is_empty_not_error(self) -> None:
         with TemporaryDirectory() as directory:
             path = write_json(directory, "profile.json", {"family_id": "x"})
             self.assertEqual(load_allergens(path), set())
 
-    def test_load_allergens_missing_file(self):
+    def test_load_allergens_missing_file(self) -> None:
         with self.assertRaisesRegex(AdapterError, "не найден"):
             load_allergens(Path("/nonexistent/profile.json"))
 
-    def test_load_allergens_bad_structure(self):
+    def test_load_allergens_bad_structure(self) -> None:
         with TemporaryDirectory() as directory:
             path = write_json(directory, "profile.json", {"allergens": "орехи"})
             with self.assertRaisesRegex(AdapterError, "списком"):
@@ -214,7 +214,7 @@ class ProfileLoadingTests(unittest.TestCase):
             with self.assertRaisesRegex(AdapterError, "корректным JSON"):
                 load_allergens(broken)
 
-    def test_demo_profile_of_repository_is_loadable(self):
+    def test_demo_profile_of_repository_is_loadable(self) -> None:
         allergens = load_allergens(Path(__file__).parents[1] / "data" / "family_profile.json")
         self.assertTrue(allergens)
 

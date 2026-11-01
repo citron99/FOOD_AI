@@ -3,14 +3,15 @@ import io
 import json
 import sys
 import unittest
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import mock
 
 from agent.adapters.base import AdapterError
 from agent.cli import (
-    Product,
     analyze,
     load_family_allergens,
     load_products,
@@ -18,10 +19,11 @@ from agent.cli import (
     render_html,
     render_markdown,
 )
+from agent.models import Product
 
 
 class CliAgentTests(unittest.TestCase):
-    def test_expired_and_urgent_are_separated(self):
+    def test_expired_and_urgent_are_separated(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text(json.dumps({"products": [
@@ -34,25 +36,25 @@ class CliAgentTests(unittest.TestCase):
             self.assertEqual(result["summary"]["urgent"], 1)
             self.assertEqual(result["groups"]["urgent"][0]["name"], "B")
 
-    def test_negative_quantity_is_rejected(self):
+    def test_negative_quantity_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text(json.dumps({"products": [{"name": "bad", "quantity": -1}]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Отрицательный остаток"):
                 load_products(path)
 
-    def test_missing_file_is_reported_clearly(self):
+    def test_missing_file_is_reported_clearly(self) -> None:
         with self.assertRaisesRegex(ValueError, "не найден"):
             load_products(Path("/nonexistent/inventory.json"))
 
-    def test_invalid_json_is_reported_clearly(self):
+    def test_invalid_json_is_reported_clearly(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text("{ not json", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "JSON"):
                 load_products(path)
 
-    def test_invalid_date_format_is_reported_clearly(self):
+    def test_invalid_date_format_is_reported_clearly(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text(json.dumps({"products": [
@@ -61,7 +63,7 @@ class CliAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Неверный формат даты"):
                 load_products(path)
 
-    def test_iso_short_forms_are_rejected(self):
+    def test_iso_short_forms_are_rejected(self) -> None:
         """date.fromisoformat принимает ещё 20260820 и недельную запись,
         а контракт поля — только календарная дата ГГГГ-ММ-ДД."""
         for raw in ("20260820", "2026-W34-4"):
@@ -73,14 +75,14 @@ class CliAgentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Неверный формат даты"):
                     load_products(path)
 
-    def test_missing_required_field_is_reported_clearly(self):
+    def test_missing_required_field_is_reported_clearly(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text(json.dumps({"products": [{"name": "Без остатка"}]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "quantity"):
                 load_products(path)
 
-    def test_render_html_produces_standalone_page(self):
+    def test_render_html_produces_standalone_page(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text(json.dumps({"products": [
@@ -95,7 +97,7 @@ class CliAgentTests(unittest.TestCase):
             self.assertIn("</html>", html)
             self.assertNotIn("<script", html)
 
-    def test_render_html_default_title_and_home_link(self):
+    def test_render_html_default_title_and_home_link(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text('{"products": []}', encoding="utf-8")
@@ -106,7 +108,7 @@ class CliAgentTests(unittest.TestCase):
             # Отчёты на сайте открываются со стартовой страницы — обратная ссылка обязана быть.
             self.assertIn('<a href="/">← На главную</a>', html)
 
-    def test_render_html_custom_title_is_escaped(self):
+    def test_render_html_custom_title_is_escaped(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inventory.json"
             path.write_text('{"products": []}', encoding="utf-8")
@@ -116,7 +118,7 @@ class CliAgentTests(unittest.TestCase):
             self.assertIn("<h1>Кафе.Ресторан &lt;b&gt;— отчёт&lt;/b&gt;</h1>", html)
             self.assertNotIn("<h1>SmartKitchen Family", html)
 
-    def test_cli_title_flag_reaches_html(self):
+    def test_cli_title_flag_reaches_html(self) -> None:
         with TemporaryDirectory() as directory:
             inventory = Path(directory) / "inventory.json"
             inventory.write_text('{"products": []}', encoding="utf-8")
@@ -142,12 +144,12 @@ class InputValidationTests(unittest.TestCase):
     позицию в ignored — просрочка исчезала из отчёта без единого слова.
     """
 
-    def _inventory(self, directory: str, items: list) -> Path:
+    def _inventory(self, directory: str, items: list[dict[str, object]]) -> Path:
         path = Path(directory) / "inventory.json"
         path.write_text(json.dumps({"products": items}), encoding="utf-8")
         return path
 
-    def test_numeric_expires_at_is_value_error_with_product_name(self):
+    def test_numeric_expires_at_is_value_error_with_product_name(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "Йогурт", "quantity": 1, "expires_at": 20260820}
@@ -155,7 +157,7 @@ class InputValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Неверный формат даты.*Йогурт"):
                 load_products(path)
 
-    def test_list_expires_at_is_value_error_with_product_name(self):
+    def test_list_expires_at_is_value_error_with_product_name(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "Йогурт", "quantity": 1, "expires_at": ["2026"]}
@@ -163,7 +165,7 @@ class InputValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Неверный формат даты.*Йогурт"):
                 load_products(path)
 
-    def test_null_name_is_rejected(self):
+    def test_null_name_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": None, "quantity": 1, "expires_at": "2026-08-20"}
@@ -171,7 +173,7 @@ class InputValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "обязательное поле «name»"):
                 load_products(path)
 
-    def test_unknown_status_warns_and_stays_ignored(self):
+    def test_unknown_status_warns_and_stays_ignored(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "Кефир", "quantity": 1, "expires_at": "2026-08-17",
@@ -186,7 +188,7 @@ class InputValidationTests(unittest.TestCase):
             result = analyze(products, date(2026, 8, 18), 3)
             self.assertEqual(result["summary"]["ignored"], 1)
 
-    def test_null_status_warns(self):
+    def test_null_status_warns(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "Кефир", "quantity": 1, "expires_at": "2026-08-17",
@@ -197,7 +199,7 @@ class InputValidationTests(unittest.TestCase):
                 load_products(path)
             self.assertIn("'null'", err.getvalue())
 
-    def test_missing_and_known_status_do_not_warn(self):
+    def test_missing_and_known_status_do_not_warn(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "A", "quantity": 1, "expires_at": "2026-08-17"},
@@ -214,7 +216,7 @@ class InputValidationTests(unittest.TestCase):
             result = analyze(products, date(2026, 8, 18), 3)
             self.assertEqual(result["summary"]["ignored"], 1)
 
-    def test_render_markdown_escapes_pipe_in_cell_values(self):
+    def test_render_markdown_escapes_pipe_in_cell_values(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [
                 {"name": "Молоко | 2.5%", "quantity": 1, "unit": "л",
@@ -235,7 +237,7 @@ class ManualAccountingSectionTests(unittest.TestCase):
     без объяснений — ignored-позиции (quantity=0) перечисляются в секции
     «Требуется ручной учёт» с пояснением, что делать пользователю."""
 
-    def _pos_result(self):
+    def _pos_result(self) -> dict[str, Any]:
         # Как из POS-адаптеров: справочник без остатков и сроков.
         products = [
             Product(name="Куриное филе", quantity=0, unit="кг",
@@ -248,7 +250,7 @@ class ManualAccountingSectionTests(unittest.TestCase):
         ]
         return analyze(products, date(2026, 8, 18), 3)
 
-    def test_markdown_lists_ignored_products_with_note(self):
+    def test_markdown_lists_ignored_products_with_note(self) -> None:
         markdown = render_markdown(self._pos_result())
         self.assertIn("## Требуется ручной учёт", markdown)
         self.assertIn("Куриное филе", markdown)
@@ -257,13 +259,13 @@ class ManualAccountingSectionTests(unittest.TestCase):
         # Детерминированный порядок — по имени.
         self.assertLess(markdown.index("Говядина"), markdown.index("Куриное филе"))
 
-    def test_html_lists_ignored_products_with_note(self):
+    def test_html_lists_ignored_products_with_note(self) -> None:
         html = render_html(self._pos_result())
         self.assertIn("<h2>Требуется ручной учёт</h2>", html)
         self.assertIn("Куриное филе", html)
         self.assertIn("Подтвердите остаток и срок вручную", html)
 
-    def test_section_absent_when_nothing_ignored(self):
+    def test_section_absent_when_nothing_ignored(self) -> None:
         result = analyze(
             [Product(name="A", quantity=1, unit="шт.", location="склад",
                      expires_at=None)],
@@ -272,7 +274,7 @@ class ManualAccountingSectionTests(unittest.TestCase):
         self.assertNotIn("Требуется ручной учёт", render_markdown(result))
         self.assertNotIn("Требуется ручной учёт", render_html(result))
 
-    def test_ignored_names_are_escaped(self):
+    def test_ignored_names_are_escaped(self) -> None:
         result = analyze(
             [Product(name="Сливки <2.5%> | акция", quantity=0, unit="л",
                      location="холод", expires_at=None)],
@@ -291,7 +293,7 @@ class ManualAccountingSectionTests(unittest.TestCase):
 class AllergenProfileTests(unittest.TestCase):
     """Профиль семьи — часть защитного слоя, его отсутствие не должно быть тихим."""
 
-    def test_existing_profile_is_loaded(self):
+    def test_existing_profile_is_loaded(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
             path.write_text(json.dumps({"allergens": ["орехи"]}), encoding="utf-8")
@@ -299,13 +301,13 @@ class AllergenProfileTests(unittest.TestCase):
             self.assertEqual(allergens, {"орехи"})
             self.assertEqual(warnings, [])
 
-    def test_missing_profile_without_flag_is_an_error(self):
+    def test_missing_profile_without_flag_is_an_error(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "absent.json"
             with self.assertRaisesRegex(ValueError, "--allow-no-profile"):
                 load_family_allergens(path)
 
-    def test_missing_profile_with_flag_warns_loudly(self):
+    def test_missing_profile_with_flag_warns_loudly(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "absent.json"
             allergens, warnings = load_family_allergens(path, allow_no_profile=True)
@@ -313,7 +315,7 @@ class AllergenProfileTests(unittest.TestCase):
             self.assertEqual(len(warnings), 1)
             self.assertIn("ОТКЛЮЧЁН", warnings[0])
 
-    def test_empty_profile_warns_instead_of_filtering_nothing(self):
+    def test_empty_profile_warns_instead_of_filtering_nothing(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
             path.write_text(json.dumps({"allergens": []}), encoding="utf-8")
@@ -331,7 +333,13 @@ class SuggestMenuReportTests(unittest.TestCase):
         "3. Паста из пшеницы с мукой — тесто, сыр"
     )
 
-    def run_cli(self, directory: str, profile_payload, extra_args=(), html=False):
+    def run_cli(
+        self,
+        directory: str,
+        profile_payload: object | None,
+        extra_args: Sequence[str] = (),
+        html: bool = False,
+    ) -> tuple[int, Path, dict[str, Any], str, Path]:
         inventory = Path(directory) / "inventory.json"
         inventory.write_text(json.dumps({"products": [
             {"name": "Куриное филе", "quantity": 1, "unit": "кг",
@@ -351,9 +359,9 @@ class SuggestMenuReportTests(unittest.TestCase):
         ]
         if html:
             argv += ["--html-out", str(html_path)]
-        calls = {}
+        calls: dict[str, Any] = {}
 
-        def fake_suggest(products, **kwargs):
+        def fake_suggest(products: object, **kwargs: object) -> str:
             calls.update(kwargs)
             calls["products"] = products
             return self.IDEAS
@@ -365,7 +373,7 @@ class SuggestMenuReportTests(unittest.TestCase):
             code = main()
         return code, out, calls, stderr.getvalue(), html_path
 
-    def test_allergen_dishes_are_hidden_and_audited(self):
+    def test_allergen_dishes_are_hidden_and_audited(self) -> None:
         with TemporaryDirectory() as directory:
             code, out, calls, _, _ = self.run_cli(
                 directory, {"family_id": "demo", "allergens": ["арахис", "глютен"]})
@@ -377,14 +385,14 @@ class SuggestMenuReportTests(unittest.TestCase):
             self.assertNotIn("Паста из пшеницы", report)    # скрыто через синонимы глютена
             self.assertIn("Скрыто блюд с аллергенами профиля: **2** (арахис, глютен)", report)
 
-    def test_missing_profile_stops_the_run(self):
+    def test_missing_profile_stops_the_run(self) -> None:
         with TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit) as caught:
                 self.run_cli(directory, None)
             self.assertEqual(caught.exception.code, 2)
             self.assertFalse((Path(directory) / "report.md").exists())
 
-    def test_allow_no_profile_publishes_with_warning(self):
+    def test_allow_no_profile_publishes_with_warning(self) -> None:
         with TemporaryDirectory() as directory:
             code, out, calls, stderr, _ = self.run_cli(
                 directory, None, extra_args=["--allow-no-profile"])
@@ -395,7 +403,7 @@ class SuggestMenuReportTests(unittest.TestCase):
             self.assertIn("ОТКЛЮЧЁН", stderr)  # предупреждение видно и в логе cron
             self.assertIn("Курица с арахисовой пастой", report)  # риск принят явно
 
-    def test_empty_profile_publishes_with_warning(self):
+    def test_empty_profile_publishes_with_warning(self) -> None:
         with TemporaryDirectory() as directory:
             code, out, _, stderr, _ = self.run_cli(directory, {"family_id": "demo", "allergens": []})
             report = out.read_text(encoding="utf-8")
@@ -404,7 +412,7 @@ class SuggestMenuReportTests(unittest.TestCase):
             self.assertIn("не содержит ни одного аллергена", stderr)
             self.assertIn("Курица с арахисовой пастой", report)
 
-    def test_suggest_menu_is_not_required(self):
+    def test_suggest_menu_is_not_required(self) -> None:
         """Без --suggest-menu профиль не проверяется: детерминированный отчёт независим от LLM."""
         with TemporaryDirectory() as directory:
             inventory = Path(directory) / "inventory.json"
@@ -428,8 +436,14 @@ class LLMDegradationTests(unittest.TestCase):
     «упасть с кодом 2 без записи отчёта».
     """
 
-    def run_cli(self, directory: str, *, failure: Exception | None = None,
-                extra_args=(), html=False):
+    def run_cli(
+        self,
+        directory: str,
+        *,
+        failure: Exception | None = None,
+        extra_args: Sequence[str] = (),
+        html: bool = False,
+    ) -> tuple[int, Path, Path, str]:
         inventory = Path(directory) / "inventory.json"
         inventory.write_text(json.dumps({"products": [
             {"name": "Куриное филе", "quantity": 1, "unit": "кг",
@@ -448,7 +462,7 @@ class LLMDegradationTests(unittest.TestCase):
         if html:
             argv += ["--html-out", str(html_path)]
 
-        def fake_suggest(products, **kwargs):
+        def fake_suggest(products: object, **kwargs: object) -> str:
             if failure is not None:
                 raise failure
             return "1. Куриный суп\n2. Омлет из яиц"
@@ -461,7 +475,7 @@ class LLMDegradationTests(unittest.TestCase):
             code = main()
         return code, out, html_path, stderr.getvalue()
 
-    def test_llm_failure_still_publishes_report(self):
+    def test_llm_failure_still_publishes_report(self) -> None:
         with TemporaryDirectory() as directory:
             code, out, _, stderr = self.run_cli(
                 directory, failure=AdapterError("таймаут запроса"))
@@ -474,7 +488,7 @@ class LLMDegradationTests(unittest.TestCase):
             self.assertIn("Куриное филе", report)
             self.assertNotIn("Куриный суп", report)
 
-    def test_strict_llm_fails_without_report(self):
+    def test_strict_llm_fails_without_report(self) -> None:
         with TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit) as caught:
                 self.run_cli(directory, failure=AdapterError("таймаут запроса"),
@@ -487,7 +501,7 @@ class MenuIdeasHtmlTests(unittest.TestCase):
     """П.9 ревью: секция «Идеи блюд» должна попадать и в HTML-отчёт,
     который публикуется на хостинг по cron, а не только в Markdown."""
 
-    def run_cli(self, directory: str, *, failure: Exception | None = None):
+    def run_cli(self, directory: str, *, failure: Exception | None = None) -> tuple[int, Path, Path]:
         inventory = Path(directory) / "inventory.json"
         inventory.write_text(json.dumps({"products": [
             {"name": "Куриное филе", "quantity": 1, "unit": "кг",
@@ -502,7 +516,7 @@ class MenuIdeasHtmlTests(unittest.TestCase):
                 "--as-of", "2026-09-28", "--suggest-menu", "--profile", str(profile),
                 "--html-out", str(html_path)]
 
-        def fake_suggest(products, **kwargs):
+        def fake_suggest(products: object, **kwargs: object) -> str:
             if failure is not None:
                 raise failure
             return "1. Куриный суп\n2. Омлет из яиц"
@@ -515,7 +529,7 @@ class MenuIdeasHtmlTests(unittest.TestCase):
             code = main()
         return code, out, html_path
 
-    def test_html_contains_menu_ideas(self):
+    def test_html_contains_menu_ideas(self) -> None:
         with TemporaryDirectory() as directory:
             code, out, html_path = self.run_cli(directory)
             html = html_path.read_text(encoding="utf-8")
@@ -528,13 +542,13 @@ class MenuIdeasHtmlTests(unittest.TestCase):
             # Секция есть и в Markdown тоже.
             self.assertIn("Идеи блюд (DeepSeek)", out.read_text(encoding="utf-8"))
 
-    def test_html_escapes_dish_names(self):
+    def test_html_escapes_dish_names(self) -> None:
         with TemporaryDirectory() as directory:
             _, _, html_path = self.run_cli(directory)
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("<li>Омлет из яиц</li>", html)
 
-    def test_html_marks_llm_failure(self):
+    def test_html_marks_llm_failure(self) -> None:
         with TemporaryDirectory() as directory:
             code, _, html_path = self.run_cli(
                 directory, failure=AdapterError("таймаут запроса"))

@@ -93,7 +93,7 @@ def http_transport(url: str, body: bytes | None, headers: dict[str, str], timeou
     request = urllib.request.Request(url, data=body, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            return bytes(response.read())
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise AdapterAuthError.rejected_credentials(url, exc.code) from None
@@ -245,7 +245,7 @@ def _rest_config_from_env(spec: RestSourceSpec) -> RestConfig:
     )
 
 
-def _map_product(spec: RestSourceSpec, item: dict, cfg: RestConfig) -> Product:
+def _map_product(spec: RestSourceSpec, item: dict[str, Any], cfg: RestConfig) -> Product:
     # Поля из явно переданного конфига имеют приоритет; пустые значения
     # заменяются системными именами фабрики.
     name_key = cfg.name_field or spec.name_field
