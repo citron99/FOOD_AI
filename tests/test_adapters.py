@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import unittest
+from typing import Any
 
 from agent.adapters import frontpad, iiko, quickresto, registry, saby, yuma
 from agent.adapters.base import (
@@ -9,17 +10,18 @@ from agent.adapters.base import (
     AdapterError,
     AdapterResponseError,
     RestConfig,
+    Transport,
     basic_authorization,
 )
 
 
-def fake_json(payload):
+def fake_json(payload: object) -> Transport:
     raw = json.dumps(payload).encode("utf-8")
     return lambda url, body, headers, timeout: raw
 
 
-def spy_transport(captured):
-    def transport(url, body, headers, timeout):
+def spy_transport(captured: dict[str, Any]) -> Transport:
+    def transport(url: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
         captured["url"], captured["body"], captured["headers"] = url, body, headers
         return b"[]"
     return transport
@@ -89,7 +91,7 @@ YUMA_SAMPLE = [
 
 
 class IikoAdapterTests(unittest.TestCase):
-    def test_import_maps_products_and_skips_nameless(self):
+    def test_import_maps_products_and_skips_nameless(self) -> None:
         outcome = iiko.import_products(IIKO_CONFIG, fake_json(IIKO_SAMPLE))
         self.assertEqual(outcome.total, 3)
         self.assertEqual(outcome.imported, 2)
@@ -102,26 +104,26 @@ class IikoAdapterTests(unittest.TestCase):
             self.assertEqual(product.quantity, 0.0)
             self.assertIsNone(product.expires_at)
 
-    def test_unexpected_structure_raises(self):
+    def test_unexpected_structure_raises(self) -> None:
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             iiko.import_products(IIKO_CONFIG, fake_json({"error": "x"}))
 
 
 class QuickRestoAdapterTests(unittest.TestCase):
-    def test_import_maps_products_and_skips_nameless(self):
+    def test_import_maps_products_and_skips_nameless(self) -> None:
         outcome = quickresto.import_products(QR_CONFIG, fake_json(QR_SAMPLE))
         self.assertEqual(outcome.imported, 1)
         self.assertEqual(outcome.skipped, 1)
         self.assertEqual(outcome.products[0].name, "Кофе зерно")
         self.assertEqual(outcome.products[0].unit, "кг")
 
-    def test_unexpected_structure_raises(self):
+    def test_unexpected_structure_raises(self) -> None:
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             quickresto.import_products(QR_CONFIG, fake_json({"items": []}))
 
-    def test_basic_auth_header_comes_from_config(self):
+    def test_basic_auth_header_comes_from_config(self) -> None:
         # Волна 5 (п.14): Basic собирает RestConfig.auth_headers(), а не адаптер.
-        captured = {}
+        captured: dict[str, Any] = {}
         quickresto.import_products(QR_CONFIG, spy_transport(captured))
         self.assertEqual(
             captured["headers"].get("Authorization"),
@@ -130,21 +132,21 @@ class QuickRestoAdapterTests(unittest.TestCase):
 
 
 class FrontPadAdapterTests(unittest.TestCase):
-    def test_import_maps_products_and_skips_nameless(self):
+    def test_import_maps_products_and_skips_nameless(self) -> None:
         outcome = frontpad.import_products(FP_CONFIG, fake_json(FP_SAMPLE))
         self.assertEqual(outcome.imported, 1)
         self.assertEqual(outcome.skipped, 1)
         self.assertEqual(outcome.products[0].name, "Чизкейк")
         self.assertEqual(outcome.products[0].unit, "шт.")
 
-    def test_unexpected_structure_raises(self):
+    def test_unexpected_structure_raises(self) -> None:
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             frontpad.import_products(FP_CONFIG, fake_json({"items": []}))
 
-    def test_secret_sent_only_in_authorization_header(self):
+    def test_secret_sent_only_in_authorization_header(self) -> None:
         # Волна 5 (п.14): секрет ровно в одном канале — заголовке Bearer;
         # в теле формы он больше не дублируется.
-        captured = {}
+        captured: dict[str, Any] = {}
         frontpad.import_products(
             RestConfig(base_url="https://demo.frontpad.ru", endpoint="/api/",
                        token="SUPERSECRET123"),
@@ -157,27 +159,27 @@ class FrontPadAdapterTests(unittest.TestCase):
 
 
 class SabyYumaAdapterTests(unittest.TestCase):
-    def test_saby_import_maps_products_and_skips_nameless(self):
+    def test_saby_import_maps_products_and_skips_nameless(self) -> None:
         outcome = saby.import_products(SABY_CONFIG, fake_json(SABY_SAMPLE))
         self.assertEqual(outcome.imported, 1)
         self.assertEqual(outcome.skipped, 1)
         self.assertEqual(outcome.products[0].name, "Сыр Гауда")
         self.assertEqual(outcome.products[0].location, "Saby Presto (справочник)")
 
-    def test_yuma_import_maps_products_and_skips_nameless(self):
+    def test_yuma_import_maps_products_and_skips_nameless(self) -> None:
         outcome = yuma.import_products(YUMA_CONFIG, fake_json(YUMA_SAMPLE))
         self.assertEqual(outcome.imported, 1)
         self.assertEqual(outcome.skipped, 1)
         self.assertEqual(outcome.products[0].name, "Латте зерно")
         self.assertEqual(outcome.products[0].location, "YUMA (справочник)")
 
-    def test_unexpected_structure_raises(self):
+    def test_unexpected_structure_raises(self) -> None:
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             saby.import_products(SABY_CONFIG, fake_json({"items": []}))
         with self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
             yuma.import_products(YUMA_CONFIG, fake_json({"items": []}))
 
-    def test_mapping_uses_passed_config_not_environ(self):
+    def test_mapping_uses_passed_config_not_environ(self) -> None:
         # Волна 5 (п.15): маппинг зависит от переданного конфига, а не читает
         # os.environ на каждую позицию.
         os.environ["SABY_NAME_FIELD"] = "bogus_field"
@@ -197,32 +199,32 @@ class SabyYumaAdapterTests(unittest.TestCase):
 
 
 class RestConfigAuthTests(unittest.TestCase):
-    def test_bearer_is_default(self):
+    def test_bearer_is_default(self) -> None:
         cfg = RestConfig(base_url="https://x", endpoint="/", token="tok")
         self.assertEqual(cfg.auth_headers(), {"Authorization": "Bearer tok"})
 
-    def test_basic_header_built_by_config(self):
+    def test_basic_header_built_by_config(self) -> None:
         cfg = RestConfig(base_url="https://x", endpoint="/", auth_kind="basic",
                          username="u", password="p")
         expected = "Basic " + base64.b64encode(b"u:p").decode("ascii")
         self.assertEqual(cfg.auth_headers(), {"Authorization": expected})
 
-    def test_none_sends_no_secret(self):
+    def test_none_sends_no_secret(self) -> None:
         cfg = RestConfig(base_url="https://x", endpoint="/", auth_kind="none", token="tok")
         self.assertEqual(cfg.auth_headers(), {})
 
 
 class RegistryTests(unittest.TestCase):
-    def test_lists_supported_sources(self):
+    def test_lists_supported_sources(self) -> None:
         sources = registry.available_sources()
         for expected in ("rkeeper", "iiko", "quickresto", "frontpad", "saby", "yuma"):
             self.assertIn(expected, sources)
 
-    def test_unknown_source_raises_with_list(self):
+    def test_unknown_source_raises_with_list(self) -> None:
         with self.assertRaisesRegex(AdapterError, "Доступные"):
             registry.load_source("unknown")
 
-    def test_load_source_reports_missing_env_as_auth_error(self):
+    def test_load_source_reports_missing_env_as_auth_error(self) -> None:
         # Волна 5 (п.16): отсутствие переменных окружения — ошибка
         # конфигурации доступа (AdapterAuthError), а не ответа системы.
         env_vars = (
