@@ -23,6 +23,7 @@ DeepSeek — внешний LLM-провайдер. Согласно ТЗ, LLM-�
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -79,6 +80,12 @@ class DeepSeekConfigError(AdapterError):
     def non_positive_timeout(cls) -> DeepSeekConfigError:
         return cls("DEEPSEEK_TIMEOUT должно быть положительным числом секунд")
 
+    @classmethod
+    def non_finite_timeout(cls, raw: str) -> DeepSeekConfigError:
+        # float("nan")/float("inf") проходят проверку «> 0», но nan ломает
+        # socket-таймаут, а inf означает «ждать вечно» — cron завис бы навсегда.
+        return cls(f"DEEPSEEK_TIMEOUT должно быть конечным числом секунд, получено: {raw!r}")
+
 
 class DeepSeekResponseError(AdapterResponseError):
     """Неожиданный ответ DeepSeek."""
@@ -101,6 +108,8 @@ def _resolve_timeout() -> float:
         value = float(raw)
     except ValueError:
         raise DeepSeekConfigError.invalid_timeout(raw) from None
+    if not math.isfinite(value):
+        raise DeepSeekConfigError.non_finite_timeout(raw)
     if value <= 0:
         raise DeepSeekConfigError.non_positive_timeout()
     return value

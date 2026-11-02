@@ -138,11 +138,9 @@ class RkeeperConfig:
             ) if not value
         ]
         if missing:
-            raise RkeeperError(
-                "Не заданы переменные окружения для R:keeper: "
-                + ", ".join(missing)
-                + ". Укажите их перед запуском импорта справочника."
-            )
+            # Отсутствие настроек доступа — ошибка конфигурации (как у REST-фабрики),
+            # а не «плохой ответ системы»: CLI и логи должны различать эти случаи.
+            raise RkeeperAuthError.missing_env("R:keeper", missing)
         return cls(base_url=base_url, station=station, username=username, password=password)
 
 

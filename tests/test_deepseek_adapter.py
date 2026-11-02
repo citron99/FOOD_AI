@@ -195,6 +195,15 @@ class DeepSeekEnvConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(AdapterError, "DEEPSEEK_TIMEOUT"):
             self.chat()
 
+    def test_non_finite_timeout_is_an_error(self) -> None:
+        """float("nan"/"inf") проходил проверку «> 0»: nan ломал socket-таймаут,
+        а inf означал бесконечное ожидание в cron."""
+        for raw in ("nan", "inf", "-inf", "1e400"):
+            with self.subTest(raw=raw):
+                os.environ["DEEPSEEK_TIMEOUT"] = raw
+                with self.assertRaisesRegex(AdapterError, "конечным числом"):
+                    self.chat()
+
 
 if __name__ == "__main__":
     unittest.main()

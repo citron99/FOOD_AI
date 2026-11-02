@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest import mock
 
 from agent.adapters.base import AdapterAuthError, AdapterError, AdapterResponseError, Transport
 from agent.adapters.rkeeper import (
@@ -134,6 +136,26 @@ class RkeeperAdapterTests(unittest.TestCase):
         self.assertEqual(result.total, 2)
         self.assertEqual(result.imported, 1)
         self.assertEqual(result.skipped, 1)
+
+    def test_missing_env_is_auth_error_with_variable_names(self) -> None:
+        """Незаданные настройки доступа — AdapterAuthError, как у REST-фабрики,
+        а не общая ошибка адаптера: журнал/cron должны различать причины."""
+        with (mock.patch.dict(os.environ, {}, clear=True),
+              self.assertRaisesRegex(RkeeperAuthError, "RK7_BASE_URL.*RK7_USER")):
+            RkeeperConfig.from_env()
+
+    def test_from_env_reads_connection(self) -> None:
+        env = {
+            "RK7_BASE_URL": "http://rk7.local:8080/",
+            "RK7_STATION": "RK7",
+            "RK7_USER": "sk_agent",
+            "RK7_PASSWORD": "secret",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            config = RkeeperConfig.from_env()
+        self.assertEqual(config.base_url, "http://rk7.local:8080")
+        self.assertEqual(config.station, "RK7")
+        self.assertEqual(config.username, "sk_agent")
 
 
 if __name__ == "__main__":
