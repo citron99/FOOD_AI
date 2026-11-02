@@ -218,6 +218,24 @@ class InputValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "обязательное поле «name»"):
                 load_products(path)
 
+    def test_container_name_is_rejected(self) -> None:
+        """Объект/массив в name печатался в отчёт как "{'ru': 'Молоко'}"."""
+        with TemporaryDirectory() as directory:
+            path = self._inventory(directory, [
+                {"name": {"ru": "Молоко"}, "quantity": 1}
+            ])
+            with self.assertRaisesRegex(ValueError, "«name» .* текстом"):
+                load_products(path)
+
+    def test_inventory_without_products_key_is_rejected(self) -> None:
+        """Опечатка в ключе ({"product": [...]}) давала пустой «чистый» отчёт."""
+        for payload in ({}, {"product": [{"name": "Молоко", "quantity": 1}]}):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                path = Path(directory) / "inventory.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "нет поля «products»"):
+                    load_products(path)
+
     def test_unknown_status_warns_and_stays_ignored(self) -> None:
         with TemporaryDirectory() as directory:
             path = self._inventory(directory, [

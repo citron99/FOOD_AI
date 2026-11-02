@@ -73,12 +73,27 @@ class InventoryError(ValueError):
         return cls(f"Поле «products» в {path} должно быть списком")
 
     @classmethod
+    def missing_products_key(cls, path: Path) -> InventoryError:
+        # Раньше опечатка в ключе ({"product": [...]}) давала пустой инвентарь
+        # и «чистый» отчёт: просрочка исчезала из учёта без единого слова.
+        return cls(
+            f"В файле инвентаря {path} нет поля «products»: "
+            "ожидается объект с полем «products» или список"
+        )
+
+    @classmethod
     def item_not_object(cls, item: object) -> InventoryError:
         return cls(f"Каждая позиция инвентаря должна быть объектом: {item!r}")
 
     @classmethod
     def missing_name(cls) -> InventoryError:
         return cls("В позиции инвентаря отсутствует обязательное поле «name»")
+
+    @classmethod
+    def invalid_name(cls, value: object) -> InventoryError:
+        # Имя — обязательный текст. Объект/массив раньше превращался в
+        # "{'ru': 'Молоко'}" и уезжал в отчёт как название продукта.
+        return cls(f"Поле «name» в позиции инвентаря должно быть текстом: {value!r}")
 
     @classmethod
     def empty_name(cls) -> InventoryError:
@@ -138,7 +153,9 @@ def _inventory_items(payload: object, path: Path) -> list[object]:
         return payload
     if not isinstance(payload, dict):
         raise InventoryError.bad_structure(path)
-    raw_items = payload.get("products", [])
+    if "products" not in payload:
+        raise InventoryError.missing_products_key(path)
+    raw_items = payload["products"]
     if not isinstance(raw_items, list):
         raise InventoryError.products_not_list(path)
     return raw_items
@@ -158,6 +175,8 @@ def _build_product(item: object) -> Product:
         raise InventoryError.item_not_object(item)
     if "name" not in item or item["name"] is None:
         raise InventoryError.missing_name()
+    if isinstance(item["name"], (dict, list)):
+        raise InventoryError.invalid_name(item["name"])
     name = str(item["name"])
     if not name.strip():
         # Позиция без наименования ломает отчёты («|  | 5 шт. |») и не даёт

@@ -82,6 +82,10 @@ if [ ! -d "$HOME/.beget" ] && [ "$DRY_RUN" -eq 0 ]; then
     echo "аккаунта. Сначала выполните: ssh <логин>@<логин>.beget.tech, затем ssh localhost -p222."
 fi
 
+# Подходящий системный интерпретатор запоминается отдельно: без этого шаг
+# проверки всегда требовал $PREFIX/bin/python3.11 и падал с кодом 4, даже когда
+# have_modern_python только что нашёл рабочий python3.12/python3.13.
+FOUND_PY=""
 if have_modern_python && [ "$FORCE" -eq 0 ]; then
     echo "Подходящий интерпретатор уже есть: $FOUND_PY ($("$FOUND_PY" -V 2>&1))"
     echo "Сборка не требуется. Повторить принудительно: --force"
@@ -120,7 +124,7 @@ else
 fi
 
 # --- 3. Проверка результата ---
-PY="$PREFIX/bin/python3.11"
+PY="${FOUND_PY:-$PREFIX/bin/python3.11}"
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "+ $PY -V && $PY -c 'import ssl, zlib, hashlib; print(ssl.OPENSSL_VERSION)'"
     exit 0
