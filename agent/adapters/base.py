@@ -26,7 +26,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http.client import HTTPMessage
-from typing import IO, Protocol, TypeVar, cast
+from typing import IO, Protocol, TypeVar
 
 from agent.models import Product
 
@@ -81,6 +81,12 @@ class AdapterResponseError(AdapterError):
     @classmethod
     def item_without_name(cls, system: str, item: object) -> AdapterResponseError:
         return cls(f"Элемент справочника {system} без наименования: {item}")
+
+    @classmethod
+    def item_not_object(cls, system: str, item: object) -> AdapterResponseError:
+        # Элемент списка может оказаться null/строкой (ошибка внутри ответа):
+        # это пропускаемая позиция, а не AttributeError на весь импорт.
+        return cls(f"Элемент справочника {system} должен быть объектом: {item!r}")
 
 
 class RestSourceConfigError(ValueError):
@@ -293,11 +299,18 @@ def _rest_config_from_env(spec: RestSourceSpec) -> RestConfig:
 
 
 def _text(value: object) -> str:
-    """Поле внешнего ответа как строка; JSON null не превращается в «None»."""
-    return "" if value is None else str(value)
+    """Поле внешнего ответа как строка; null и объект/массив — не текст."""
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    return str(value)
 
 
-def _map_product(spec: RestSourceSpec, item: Mapping[str, object], cfg: RestConfig) -> Product:
+def _map_product(spec: RestSourceSpec, item: object, cfg: RestConfig) -> Product:
+    # Элементы справочника — JSON-объекты с произвольными именами полей:
+    # контракт известен только в конфигурации источника, поэтому сужение
+    # до Mapping делается здесь, а не в типах внешнего payload'а.
+    if not isinstance(item, Mapping):
+        raise AdapterResponseError.item_not_object(spec.system, item)
     # Поля из явно переданного конфига имеют приоритет; пустые значения
     # заменяются системными именами фабрики.
     name_key = cfg.name_field or spec.name_field
@@ -378,10 +391,7 @@ def make_rest_source(spec: RestSourceSpec) -> RestImporter:
         payload = fetch_json(cfg, transport, body=body, headers=headers or None)
         return build_outcome(
             _extract_items(spec, payload),
-            # Элементы справочника — JSON-объекты с произвольными именами полей:
-            # контракт известен только в конфигурации источника, поэтому сужение
-            # до Mapping делается здесь, а не в типах внешнего payload'а.
-            lambda item: _map_product(spec, cast("Mapping[str, object]", item), cfg),
+            lambda item: _map_product(spec, item, cfg),
         )
 
     return import_products

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -92,6 +93,10 @@ class InventoryError(ValueError):
         return cls(f"Нечисловой остаток у продукта «{name}»: {value!r}")
 
     @classmethod
+    def non_finite_quantity(cls, name: str, value: object) -> InventoryError:
+        return cls(f"Остаток у продукта «{name}» должен быть конечным числом: {value!r}")
+
+    @classmethod
     def negative_quantity(cls, name: str) -> InventoryError:
         return cls(f"Отрицательный остаток запрещён: {name}")
 
@@ -140,8 +145,8 @@ def _inventory_items(payload: object, path: Path) -> list[object]:
 
 
 def _label(value: object, default: str) -> str:
-    """Необязательное текстовое поле: JSON null даёт запасное значение, а не «None»."""
-    if value is None:
+    """Необязательное текстовое поле: null, объект и массив дают запасное значение."""
+    if value is None or isinstance(value, (dict, list)):
         return default
     text = str(value)
     return text if text.strip() else default
@@ -164,6 +169,10 @@ def _build_product(item: object) -> Product:
         quantity = float(item["quantity"])
     except (TypeError, ValueError):
         raise InventoryError.non_numeric_quantity(name, item["quantity"]) from None
+    if not math.isfinite(quantity):
+        # JSON-парсер Python принимает NaN/Infinity, а строки «nan»/«inf»
+        # проходят float(): отчёт показывал «nan» вместо понятной ошибки.
+        raise InventoryError.non_finite_quantity(name, item["quantity"])
     if quantity < 0:
         raise InventoryError.negative_quantity(name)
     # Волна 3 (ревью, «валидация входных данных»): опечатка («actve») или
@@ -675,7 +684,12 @@ def main() -> int:
         )
         menu_ideas = _menu_ideas(context)
         markdown = _append_ideas(markdown, menu_ideas)
-    _write_reports(args, markdown, result, menu_ideas)
+    try:
+        _write_reports(args, markdown, result, menu_ideas)
+    except OSError as exc:
+        # Каталог вместо файла, read-only том, нет прав, диск полон: раньше это
+        # была трассировка, теперь — понятная ошибка запуска (exit 2).
+        parser.error(f"Не удалось записать отчёт: {exc}")
     print(json.dumps(result["summary"], ensure_ascii=False))
     return 0
 

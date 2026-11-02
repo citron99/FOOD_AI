@@ -136,6 +136,22 @@ class IikoAdapterTests(unittest.TestCase):
         ]}))
         self.assertEqual([product.unit for product in outcome.products], ["шт.", "шт."])
 
+    def test_non_object_items_are_skipped_not_crashing(self) -> None:
+        """Элемент списка строкой или null ронял импорт AttributeError'ом."""
+        outcome = iiko.import_products(IIKO_CONFIG, fake_json({"products": [
+            "oops", None, {"name": "Соль"},
+        ]}))
+        self.assertEqual(outcome.total, 3)
+        self.assertEqual(outcome.imported, 1)
+        self.assertEqual(outcome.skipped, 2)
+
+    def test_container_instead_of_name_is_skipped(self) -> None:
+        """Объект в поле name печатался в отчёте как repr Python-словаря."""
+        outcome = iiko.import_products(IIKO_CONFIG, fake_json({"products": [
+            {"name": {"ru": "Молоко"}, "mainUnit": "л"},
+        ]}))
+        self.assertEqual(outcome.skipped, 1)
+
 
 class QuickRestoAdapterTests(unittest.TestCase):
     def test_import_maps_products_and_skips_nameless(self) -> None:

@@ -26,7 +26,7 @@ import json
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from agent.adapters.base import (
     AdapterError,
@@ -59,24 +59,6 @@ class ChatRequest(TypedDict):
     messages: list[ChatMessage]
     max_tokens: int
     temperature: float
-
-
-class ChatChoiceMessage(TypedDict, total=False):
-    """Сообщение внутри choice; провайдер может добавить служебные поля."""
-
-    role: str
-    content: str
-
-
-class ChatChoice(TypedDict, total=False):
-    message: ChatChoiceMessage
-
-
-class ChatResponse(TypedDict, total=False):
-    """Ответ DeepSeek: обязателен только непустой ``choices``."""
-
-    choices: list[ChatChoice]
-    usage: dict[str, int]
 
 
 class DeepSeekConfigError(AdapterError):
@@ -146,17 +128,31 @@ class DeepSeekConfig:
 
 
 def _response_content(payload: object) -> str:
-    """Достаёт текст первого choice; пустой ответ — ``DeepSeekResponseError``."""
-    raw_choices = payload.get("choices") if isinstance(payload, dict) else None
-    if not raw_choices:
+    """Достаёт текст первого choice; неожиданная структура — ``DeepSeekResponseError``.
+
+    Провайдер (и любой прокси на его месте) может вернуть ``choices`` строкой,
+    ``[null]`` или сообщением без текста. Раньше такие ответы роняли запуск
+    голым ``AttributeError`` вместо понятной ошибки адаптера.
+    """
+    if not isinstance(payload, dict):
+        raise DeepSeekResponseError.unexpected_structure(SYSTEM, payload)
+    if "choices" not in payload:
         raise DeepSeekResponseError.missing_choices(payload)
-    # Непустой choices проверен выше; остальные поля — известный контракт API.
-    choice = cast(ChatResponse, payload)["choices"][0]
+    raw_choices = payload["choices"]
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise DeepSeekResponseError.unexpected_structure(SYSTEM, raw_choices)
+    choice = raw_choices[0]
+    if not isinstance(choice, dict):
+        raise DeepSeekResponseError.unexpected_structure(SYSTEM, choice)
     message = choice.get("message")
-    content = message.get("content") if message is not None else None
-    if not content:
+    if not isinstance(message, dict):
+        raise DeepSeekResponseError.unexpected_structure(SYSTEM, message)
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise DeepSeekResponseError.unexpected_structure(SYSTEM, content)
+    if not content.strip():
         raise DeepSeekResponseError.empty_content(payload)
-    return str(content)
+    return content
 
 
 def chat(messages: list[ChatMessage], *, config: DeepSeekConfig | None = None,

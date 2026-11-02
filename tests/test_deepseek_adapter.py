@@ -73,6 +73,30 @@ class DeepSeekAdapterTests(unittest.TestCase):
                 config=deepseek.DeepSeekConfig(api_key="k", transport=fake_response(payload)),
             )
 
+    def test_malformed_choices_raise_response_error(self) -> None:
+        """Битые структуры роняли чат AttributeError'ом вместо ошибки адаптера."""
+        payloads = (
+            {"choices": "oops"},
+            {"choices": [None]},
+            {"choices": [{"message": "not-a-message"}]},
+            {"choices": [{"message": {"content": 7}}]},
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload), \
+                    self.assertRaisesRegex(AdapterResponseError, "неожиданную структуру"):
+                deepseek.chat(
+                    [{"role": "user", "content": "hi"}],
+                    config=deepseek.DeepSeekConfig(api_key="k", transport=fake_response(payload)),
+                )
+
+    def test_whitespace_only_content_is_empty(self) -> None:
+        payload = {"choices": [{"message": {"content": "  \n\t"}}]}
+        with self.assertRaisesRegex(AdapterResponseError, "пустой текст"):
+            deepseek.chat(
+                [{"role": "user", "content": "hi"}],
+                config=deepseek.DeepSeekConfig(api_key="k", transport=fake_response(payload)),
+            )
+
     def test_suggest_menu_ideas_mentions_products(self) -> None:
         products = [Product(name="Куриное филе", quantity=1, unit="кг",
                             location="холодильник", expires_at=None)]
