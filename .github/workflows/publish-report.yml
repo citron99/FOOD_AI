@@ -195,23 +195,20 @@ jobs:
         run: |
           set -euo pipefail
           base="${PUBLIC_URL%/}"
-          for pair in "index.html:site/index.html" \
-                      "dom/index.html:reports/dom/expiry_report.html" \
-                      "dom/expiry_report.md:reports/dom/expiry_report.md" \
-                      "dom/expiry_report.json:reports/dom/expiry_report.json" \
-                      "cafe/index.html:reports/cafe/expiry_report.html" \
-                      "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
-                      "cafe/expiry_report.json:reports/cafe/expiry_report.json"; do
-            remote="${pair%%:*}"; local="${pair#*:}"
-            # ?t=$(date +%s) обходит кеш CDN/сервера, чтобы получить свежую копию.
-            code=$(curl -sS -o "$RUNNER_TEMP/dl" -w '%{http_code}' -H "Cache-Control: no-cache" --retry 3 --retry-delay 5 "$base/$remote?t=$(date +%s)")
-            [ "$code" = "200" ] || { echo "::error::$base/$remote вернул HTTP $code"; exit 1; }
-            remote_sum=$(sha256sum < "$RUNNER_TEMP/dl" | cut -d' ' -f1)
-            local_sum=$(sha256sum < "$local" | cut -d' ' -f1)
-            remote_size=$(wc -c < "$RUNNER_TEMP/dl")
-            local_size=$(wc -c < "$local")
-            echo "Проверка $remote: локальный sha256=$local_sum ($local_size байт), удалённый sha256=$remote_sum ($remote_size байт)"
-            [ "$remote_sum" = "$local_sum" ] || {
-              echo "::error::$remote не совпадает с $local (sha256 $remote_sum ≠ $local_sum, размеры: локальный $local_size, удалённый $remote_size)"; exit 1; }
-            echo "OK $base/$remote HTTP 200, sha256 совпадает"
-          done
+          # Хостинг периодически отвечает 503 на время обслуживания (см. прогоны
+          # 41628528765 и 41823954533), поэтому проверка повторяется каждые 5 минут,
+          # всего 12 попыток — около часа. Повторяются только временные ошибки:
+          # 5xx, 408/429 и сетевые сбои. Если файл отдаётся с другим sha256 или
+          # вернул 4xx, публикация действительно сломана — повтор не поможет,
+          # и проверка падает сразу.
+          python -m agent.publish_check \
+            --base "$base" \
+            --attempts 12 \
+            --delay 300 \
+            --pair "index.html:site/index.html" \
+            --pair "dom/index.html:reports/dom/expiry_report.html" \
+            --pair "dom/expiry_report.md:reports/dom/expiry_report.md" \
+            --pair "dom/expiry_report.json:reports/dom/expiry_report.json" \
+            --pair "cafe/index.html:reports/cafe/expiry_report.html" \
+            --pair "cafe/expiry_report.md:reports/cafe/expiry_report.md" \
+            --pair "cafe/expiry_report.json:reports/cafe/expiry_report.json"
