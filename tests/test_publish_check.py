@@ -1,4 +1,4 @@
-"""Автоповтор проверки публикации: 5xx/сеть повторяются, sha/4xx — нет."""
+"""Автоповтор проверки публикации: 5xx/сеть и устаревшая версия файла повторяются, 4xx — нет."""
 
 from __future__ import annotations
 
@@ -46,12 +46,25 @@ class PublishCheckTests(unittest.TestCase):
         self.local.write_bytes(CONTENT)
         self.pair = Pair(remote="index.html", local=self.local)
 
-    def check(self, fetch: FakeFetch, *, attempts: int = 1, delay: float = 0.0) -> list[float]:
+    def check(
+        self,
+        fetch: FakeFetch,
+        *,
+        attempts: int = 1,
+        delay: float = 0.0,
+        mismatch_attempts: int = 1,
+        mismatch_delay: float = 0.0,
+    ) -> list[float]:
         sleeps: list[float] = []
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             check_publication(
                 "http://example.test", [self.pair], fetch=fetch, sleep=sleeps.append,
-                policy=RetryPolicy(attempts=attempts, delay=delay),
+                policy=RetryPolicy(
+                    attempts=attempts,
+                    delay=delay,
+                    mismatch_attempts=mismatch_attempts,
+                    mismatch_delay=mismatch_delay,
+                ),
             )
         return sleeps
 
@@ -85,15 +98,29 @@ class PublishCheckTests(unittest.TestCase):
             )
         self.assertEqual(len(fetch.urls), 1)
 
-    def test_mismatched_content_is_not_retried(self) -> None:
-        fetch = FakeFetch([(200, b"old report")])
-        with (redirect_stdout(io.StringIO()),
-              self.assertRaisesRegex(PublishCheckError, "не совпадает")):
+    def test_stale_content_is_retried_until_fresh(self) -> None:
+        fetch = FakeFetch([(200, b"old report"), (200, CONTENT)])
+        sleeps = self.check(fetch, mismatch_attempts=2, mismatch_delay=60.0)
+        self.assertEqual(sleeps, [60.0])
+        self.assertEqual(len(fetch.urls), 2)
+
+    def test_stale_content_exhausts_its_own_budget(self) -> None:
+        fetch = FakeFetch([(200, b"old report")] * 3)
+        with (redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()),
+              self.assertRaisesRegex(PublishCheckError, r"попыток: 3.*не совпадает")):
             check_publication(
                 "http://example.test", [self.pair], fetch=fetch, sleep=no_sleep,
-                policy=RetryPolicy(attempts=3, delay=0),
+                policy=RetryPolicy(attempts=5, delay=0, mismatch_attempts=3, mismatch_delay=0),
             )
-        self.assertEqual(len(fetch.urls), 1)
+        self.assertEqual(len(fetch.urls), 3)
+
+    def test_transient_and_stale_budgets_are_independent(self) -> None:
+        fetch = FakeFetch([(503, b""), (200, b"old report"), (502, b""), (200, CONTENT)])
+        sleeps = self.check(
+            fetch, attempts=3, delay=5.0, mismatch_attempts=3, mismatch_delay=60.0,
+        )
+        self.assertEqual(sleeps, [5.0, 60.0, 5.0])
+        self.assertEqual(len(fetch.urls), 4)
 
     def test_missing_local_file_is_permanent(self) -> None:
         missing = Pair(remote="index.html", local=self.local.with_name("gone.html"))
@@ -121,8 +148,12 @@ class PublishCheckTests(unittest.TestCase):
     def test_retry_policy_validates_values(self) -> None:
         with self.assertRaisesRegex(PublishCheckError, "не меньше 1"):
             RetryPolicy(attempts=0)
+        with self.assertRaisesRegex(PublishCheckError, "не меньше 1"):
+            RetryPolicy(mismatch_attempts=0)
         with self.assertRaisesRegex(PublishCheckError, "отрицательной"):
             RetryPolicy(delay=-1)
+        with self.assertRaisesRegex(PublishCheckError, "отрицательной"):
+            RetryPolicy(mismatch_delay=-1)
 
     def test_pair_requires_remote_and_local(self) -> None:
         for raw in ("index.html", ":local.html", "remote:"):

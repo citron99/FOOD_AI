@@ -3,7 +3,12 @@
 Workflow публикует отчёт по FTP и затем сверяет каждый файл с локальной
 сборкой. Хостинг периодически отвечает 503 на время обслуживания, поэтому
 пятисотки и сетевые ошибки считаются временными и проверяются повторно.
-Несовпадение sha256 и 4xx повтором не лечатся: это ошибка публикации.
+
+Сразу после FTP-загрузки край хостинга может ещё отдавать предыдущую версию
+файла с кодом 200 — прогон 42021950965 упал именно так: через полминуты после
+заливки сайт вернул 316966 байт вместо 1736, а спустя время уже совпадал с
+локальной сборкой. Поэтому несовпадение sha256 повторяется отдельным, более
+коротким бюджетом попыток. 4xx повтором не лечатся: это ошибка публикации.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from pathlib import Path
 
 DEFAULT_ATTEMPTS = 12
 DEFAULT_DELAY = 300.0
+DEFAULT_MISMATCH_ATTEMPTS = 5
+DEFAULT_MISMATCH_DELAY = 60.0
 FETCH_TIMEOUT = 30.0
 TRANSIENT_STATUSES = frozenset({408, 429})
 
@@ -39,15 +46,6 @@ class PublishCheckError(RuntimeError):
     @classmethod
     def unexpected_status(cls, url: str, status: int) -> PublishCheckError:
         return cls(f"{url} вернул HTTP {status}")
-
-    @classmethod
-    def mismatch(cls, pair: Pair, remote_sum: str, remote_size: int,
-                 local_sum: str, local_size: int) -> PublishCheckError:
-        return cls(
-            f"{pair.remote} не совпадает с {pair.local}: "
-            f"sha256 {remote_sum} ≠ {local_sum}, "
-            f"размеры: удалённый {remote_size}, локальный {local_size}"
-        )
 
     @classmethod
     def exhausted(cls, attempts: int, error: PublishCheckError) -> PublishCheckError:
@@ -74,6 +72,19 @@ class TransientPublishError(PublishCheckError):
         return cls(f"{url}: {error}")
 
 
+class TransientMismatchError(PublishCheckError):
+    """Сайт отдал другую версию файла: край хостинга ещё не увидел загрузку."""
+
+    @classmethod
+    def mismatch(cls, pair: Pair, remote_sum: str, remote_size: int,
+                 local_sum: str, local_size: int) -> TransientMismatchError:
+        return cls(
+            f"{pair.remote} не совпадает с {pair.local}: "
+            f"sha256 {remote_sum} ≠ {local_sum}, "
+            f"размеры: удалённый {remote_size}, локальный {local_size}"
+        )
+
+
 @dataclass(frozen=True)
 class Pair:
     remote: str
@@ -84,11 +95,13 @@ class Pair:
 class RetryPolicy:
     attempts: int = DEFAULT_ATTEMPTS
     delay: float = DEFAULT_DELAY
+    mismatch_attempts: int = DEFAULT_MISMATCH_ATTEMPTS
+    mismatch_delay: float = DEFAULT_MISMATCH_DELAY
 
     def __post_init__(self) -> None:
-        if self.attempts < 1:
+        if self.attempts < 1 or self.mismatch_attempts < 1:
             raise PublishCheckError.bad_attempts()
-        if self.delay < 0:
+        if self.delay < 0 or self.mismatch_delay < 0:
             raise PublishCheckError.bad_delay()
 
 
@@ -141,20 +154,10 @@ def check_once(base: str, pairs: Sequence[Pair], fetch: Fetch, *, cache_buster: 
         remote_sum = hashlib.sha256(body).hexdigest()
         local_sum = hashlib.sha256(expected).hexdigest()
         if remote_sum != local_sum:
-            raise PublishCheckError.mismatch(
+            raise TransientMismatchError.mismatch(
                 pair, remote_sum, len(body), local_sum, len(expected),
             )
         print(f"OK {base}/{pair.remote} HTTP 200, sha256 совпадает")
-
-
-def _attempt(
-    base: str, pairs: Sequence[Pair], fetch: Fetch, cache_buster: str,
-) -> TransientPublishError | None:
-    try:
-        check_once(base, pairs, fetch, cache_buster=cache_buster)
-    except TransientPublishError as error:
-        return error
-    return None
 
 
 def check_publication(
@@ -166,18 +169,38 @@ def check_publication(
     policy: RetryPolicy | None = None,
 ) -> None:
     retry = policy if policy is not None else RetryPolicy()
-    for attempt in range(1, retry.attempts + 1):
-        error = _attempt(base, pairs, fetch, str(int(time.time())))
-        if error is None:
+    transient_left = retry.attempts
+    mismatch_left = retry.mismatch_attempts
+    while True:
+        try:
+            check_once(base, pairs, fetch, cache_buster=str(int(time.time())))
+        except TransientMismatchError as error:
+            mismatch_left -= 1
+            if mismatch_left == 0:
+                raise PublishCheckError.exhausted(
+                    retry.mismatch_attempts, error,
+                ) from error
+            print(
+                f"Попытка {retry.mismatch_attempts - mismatch_left}/"
+                f"{retry.mismatch_attempts} (устаревшая версия файла): {error}; "
+                f"повтор через {retry.mismatch_delay:g} с",
+                file=sys.stderr,
+            )
+            sleep(retry.mismatch_delay)
+        except TransientPublishError as error:
+            transient_left -= 1
+            if transient_left == 0:
+                raise PublishCheckError.exhausted(
+                    retry.attempts, error,
+                ) from error
+            print(
+                f"Попытка {retry.attempts - transient_left}/{retry.attempts}: "
+                f"{error}; повтор через {retry.delay:g} с",
+                file=sys.stderr,
+            )
+            sleep(retry.delay)
+        else:
             return
-        if attempt == retry.attempts:
-            raise PublishCheckError.exhausted(retry.attempts, error)
-        print(
-            f"Попытка {attempt}/{retry.attempts}: {error}; "
-            f"повтор через {retry.delay:g} с",
-            file=sys.stderr,
-        )
-        sleep(retry.delay)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -193,6 +216,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="всего попыток при временных ошибках")
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY,
                         help="пауза между попытками, секунд")
+    parser.add_argument("--mismatch-attempts", type=int, default=DEFAULT_MISMATCH_ATTEMPTS,
+                        help="попыток при несовпадении sha256 (край отдаёт старую версию файла)")
+    parser.add_argument("--mismatch-delay", type=float, default=DEFAULT_MISMATCH_DELAY,
+                        help="пауза между попытками при несовпадении sha256, секунд")
     return parser
 
 
@@ -206,7 +233,12 @@ def main(
     args = parser.parse_args(argv)
     try:
         pairs = [parse_pair(raw) for raw in args.pair]
-        policy = RetryPolicy(attempts=args.attempts, delay=args.delay)
+        policy = RetryPolicy(
+            attempts=args.attempts,
+            delay=args.delay,
+            mismatch_attempts=args.mismatch_attempts,
+            mismatch_delay=args.mismatch_delay,
+        )
         check_publication(
             args.base.rstrip("/"), pairs, fetch=fetch, sleep=sleep, policy=policy,
         )
