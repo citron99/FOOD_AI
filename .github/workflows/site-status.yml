@@ -1,0 +1,85 @@
+# Мониторинг доступности сайтов аккаунта SpaceWeb (сервер VH403).
+#
+# Проверяются технические домены *.swtest.ru: они резолвятся всегда и показывают
+# именно состояние хостинга, даже когда пользовательские домены не зарегистрированы
+# (так было 10.11.2026: citron99.garden истёк, а все vhost'ы отдавали 503).
+#
+# Раз в час: чаще — лишний шум от плановых работ хостинга. Каждый сайт проверяется
+# двумя попытками с паузой 30 с, чтобы одиночный 503 на границе не ронял прогон.
+# Сводка по всем сайтам пишется в Summary, недоступность роняет job.
+#
+# GitHub отключает расписания публичного репозитория после 60 дней без активности —
+# если проверки пропали, включить workflow вручную в Actions.
+
+name: site-status
+
+on:
+  schedule:
+    # Каждый час; cron в Actions всегда по UTC.
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-status
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Europe/Moscow
+      SITES: |
+        Сад|http://citron99.garden.swtest.ru/
+        citron99ra|http://citron99ra.temp.swtest.ru/
+        SmartKitchen|http://eda.citron99.garden.swtest.ru/
+        Monitor|http://monitor.citron99.garden.swtest.ru/
+    steps:
+      - name: Проверить сайты
+        run: |
+          set -uo pipefail
+          attempts=2
+          delay=30
+          failed=0
+          errfile="$RUNNER_TEMP/curl.err"
+          {
+            echo "## Статус сайтов"
+            echo ""
+            echo "Проверка: $(date '+%d.%m.%Y %H:%M %Z')"
+            echo ""
+            echo "| Сайт | URL | HTTP | Время, с |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS='|' read -r name url; do
+            [ -z "$name" ] && continue
+            code=000
+            elapsed=0
+            err=""
+            for try in $(seq 1 "$attempts"); do
+              out=$(curl -sS -L -o /dev/null -w "%{http_code} %{time_total}" \
+                         -m 30 "$url" 2>"$errfile") || true
+              IFS=' ' read -r code elapsed <<< "$out"
+              code="${code:-000}"
+              if [ "$code" = "200" ]; then break; fi
+              err=$(head -n 1 "$errfile")
+              if [ "$try" -lt "$attempts" ]; then sleep "$delay"; fi
+            done
+            if [ "$code" = "200" ]; then
+              echo "| $name | $url | $code | $elapsed |" >> "$GITHUB_STEP_SUMMARY"
+              echo "OK   $name $url — HTTP $code"
+            else
+              echo "| $name | $url | **$code** | $elapsed |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$name ($url) — HTTP $code${err:+: $err}"
+              failed=1
+            fi
+          done <<< "$SITES"
+          if [ "$failed" -ne 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Есть недоступные сайты.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Все сайты отвечают HTTP 200." >> "$GITHUB_STEP_SUMMARY"
